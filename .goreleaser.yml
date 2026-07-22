@@ -18,10 +18,7 @@ builds:
       - arm64
     ignore:
       - goos: linux
-        goarch: arm64  # CGO 交叉编译 arm64 较复杂，先只支持 amd64
-    hooks:
-      darwin_amd64:
-        post: lipo -create -output {{ .Path }}-universal {{ .Path }} {{ .Path }}-arm64
+        goarch: arm64
   - id: goshell-windows
     main: ./cmd/meatshell
     binary: goshell.exe

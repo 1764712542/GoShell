@@ -24,3 +24,4 @@ bin/
 # OS
 .DS_Store
 Thumbs.db
+gen_icon.go
