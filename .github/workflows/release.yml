@@ -17,15 +17,7 @@ permissions:
 jobs:
   # ───────────────────────── Linux ─────────────────────────
   build-linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goarch: amd64
-            runner: ubuntu-latest
-          - goarch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -40,33 +32,34 @@ jobs:
           sudo apt-get install -y \
             libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
             libx11-dev libxrandr-dev libxcursor-dev libxinerama-dev \
-            libxi-dev libxxf86vm-dev libasound2-dev pkg-config
+            libxi-dev libxxf86vm-dev libasound2-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            pkg-config
 
       - name: Build
         env:
           CGO_ENABLED: 1
           GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
+          GOARCH: amd64
         run: |
           go build -trimpath -ldflags="-s -w" -o goshell ./cmd/meatshell
 
       - name: Package
         run: |
           VERSION="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          ARCH=${{ matrix.goarch }}
-          mkdir -p dist/goshell-${VERSION}-linux-${ARCH}
-          cp goshell dist/goshell-${VERSION}-linux-${ARCH}/
-          cp packaging/linux/goshell.desktop dist/goshell-${VERSION}-linux-${ARCH}/ 2>/dev/null || true
-          cp packaging/linux/install.sh dist/goshell-${VERSION}-linux-${ARCH}/ 2>/dev/null || true
-          cp assets/icon.png dist/goshell-${VERSION}-linux-${ARCH}/ 2>/dev/null || true
-          cp -r lang dist/goshell-${VERSION}-linux-${ARCH}/ 2>/dev/null || true
-          chmod +x dist/goshell-${VERSION}-linux-${ARCH}/install.sh 2>/dev/null || true
+          mkdir -p dist/goshell-${VERSION}-linux-amd64
+          cp goshell dist/goshell-${VERSION}-linux-amd64/
+          cp packaging/linux/goshell.desktop dist/goshell-${VERSION}-linux-amd64/ 2>/dev/null || true
+          cp packaging/linux/install.sh dist/goshell-${VERSION}-linux-amd64/ 2>/dev/null || true
+          cp assets/icon.png dist/goshell-${VERSION}-linux-amd64/ 2>/dev/null || true
+          cp -r lang dist/goshell-${VERSION}-linux-amd64/ 2>/dev/null || true
+          chmod +x dist/goshell-${VERSION}-linux-amd64/install.sh 2>/dev/null || true
           cd dist
-          tar -czf goshell-${VERSION}-linux-${ARCH}.tar.gz goshell-${VERSION}-linux-${ARCH}
+          tar -czf goshell-${VERSION}-linux-amd64.tar.gz goshell-${VERSION}-linux-amd64
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-${{ matrix.goarch }}
+          name: linux-amd64
           path: dist/*.tar.gz
           retention-days: 1
 
@@ -156,6 +149,7 @@ jobs:
   release:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
+    if: always() && !cancelled()
     steps:
       - uses: actions/checkout@v4
 
