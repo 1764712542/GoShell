@@ -1,11 +1,11 @@
 # Meatshell-Go 设计文档
 
-> 将 Rust + Slint 实现的 [meatshell](https://github.com/jeff141/meatshell) SSH/终端客户端用 Go + Fyne 全量重构，打包为 macOS / Windows / Linux 三平台可用的原生应用。
+> SSH/终端客户端用 Go + Fyne 全量重构，打包为 macOS / Windows / Linux 三平台可用的原生应用。
 
 ## 1. 目标与范围
 
 ### 1.1 项目目标
-- **功能对等**：实现 meatshell 的全部 16+ 功能模块
+- **功能对等**：实现 全部 16+ 功能模块
 - **性能优先**：纯 Go 编译，单二进制，低内存占用（目标 < 50MB 常驻）
 - **跨平台**：macOS（arm64/amd64）、Windows（amd64）、Linux（amd64/arm64）统一代码库
 - **个人学习**：理解 SSH 协议、终端模拟、系统监控、GUI 架构的工程实践

@@ -1,0 +1,26 @@
+# Dependencies
+/meatshell
+*.exe
+*.app
+*.tar.gz
+*.zip
+*.syso
+!packaging/**/*.sh
+!packaging/**/*.ps1
+!packaging/**/*.desktop
+!packaging/**/*.plist
+
+# Build output
+dist/
+bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

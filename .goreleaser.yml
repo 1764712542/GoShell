@@ -1,0 +1,77 @@
+project_name: meatshell
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: meatshell
+    main: ./cmd/meatshell
+    binary: meatshell
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64  # CGO 交叉编译 arm64 较复杂，先只支持 amd64
+    hooks:
+      darwin_amd64:
+        post: lipo -create -output {{ .Path }}-universal {{ .Path }} {{ .Path }}-arm64
+  - id: meatshell-windows
+    main: ./cmd/meatshell
+    binary: meatshell.exe
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+      - CXX=x86_64-w64-mingw32-g++
+    goos:
+      - windows
+    goarch:
+      - amd64
+
+archives:
+  - id: macos
+    builds: [meatshell]
+    name_template: "{{ .ProjectName }}-{{ .Version }}-macos-{{ .Arch }}"
+    format: zip
+    files:
+      - packaging/darwin/Info.plist
+      - assets/icon.png
+      - lang/*
+  - id: linux
+    builds: [meatshell]
+    name_template: "{{ .ProjectName }}-{{ .Version }}-linux-{{ .Arch }}"
+    format: tar.gz
+    files:
+      - packaging/linux/meatshell.desktop
+      - packaging/linux/install.sh
+      - assets/icon.png
+      - lang/*
+  - id: windows
+    builds: [meatshell-windows]
+    name_template: "{{ .ProjectName }}-{{ .Version }}-windows-x86_64"
+    format: zip
+    files:
+      - assets/icon.png
+      - lang/*
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
