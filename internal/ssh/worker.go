@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -34,6 +37,12 @@ type Worker struct {
 	cols      int
 	rows      int
 
+	// Keepalive 相关
+	keepaliveTicker    *time.Ticker
+	keepaliveInterval  time.Duration
+	keepaliveCount     int
+	maxKeepaliveFailures int
+
 	// 主机密钥确认回调
 	hostKeyConfirm chan bool
 
@@ -45,12 +54,14 @@ type Worker struct {
 // uiChan 用于向 UI 发送事件，inputChan 用于接收键盘输入。
 func NewWorker(sess *config.Session, uiChan chan event.UIEvent) *Worker {
 	return &Worker{
-		session:        sess,
-		uiChan:         uiChan,
-		inputChan:      make(chan []byte, 256),
-		hostKeyConfirm: make(chan bool, 1),
-		cols:           80,
-		rows:           24,
+		session:            sess,
+		uiChan:             uiChan,
+		inputChan:          make(chan []byte, 256),
+		hostKeyConfirm:     make(chan bool, 1),
+		keepaliveInterval:  30 * time.Second,
+		maxKeepaliveFailures: 3,
+		cols:               80,
+		rows:               24,
 	}
 }
 
@@ -162,6 +173,10 @@ func (w *Worker) Connect(ctx context.Context) error {
 			log.Warn("failed to start tunnel", "type", tunnel.Type, "err", err)
 		}
 	}
+
+	// 启动 keepalive goroutine
+	w.wg.Add(1)
+	go w.keepaliveLoop()
 
 	// 发送已连接状态
 	w.sendStatus(event.StatusConnected, fmt.Sprintf("已连接 %s@%s:%d", w.session.Username, w.session.Host, w.session.Port))
@@ -358,6 +373,155 @@ func (w *Worker) Client() *ssh.Client {
 // SessionID 返回会话 ID
 func (w *Worker) SessionID() string {
 	return w.session.ID
+}
+
+// keepaliveLoop 定期发送 keepalive 请求以保持 SSH 连接活跃。
+// 连续失败超过 maxKeepaliveFailures 次后退出，连接将被视为已断开。
+func (w *Worker) keepaliveLoop() {
+	defer w.wg.Done()
+	ticker := time.NewTicker(w.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			// Send keepalive request
+			_, _, err := w.client.SendRequest("keepalive@openssh.com", true, nil)
+			if err != nil {
+				w.mu.Lock()
+				w.keepaliveCount++
+				exceeded := w.keepaliveCount >= w.maxKeepaliveFailures
+				w.mu.Unlock()
+				if exceeded {
+					log.Warn("keepalive failed, connection may be dead", "host", w.session.Host)
+					return
+				}
+			} else {
+				w.mu.Lock()
+				w.keepaliveCount = 0
+				w.mu.Unlock()
+			}
+		case <-w.ctx.Done():
+			return
+		}
+	}
+}
+
+// dialViaJumpHost 通过跳板机（ProxyJump）建立到目标主机的 SSH 连接。
+// 流程：
+//  1. 解析 ProxyJump 值（格式: [user@]host[:port]）
+//  2. 连接跳板机（使用与目标主机相同的认证方式）
+//  3. 通过跳板机的 SSH 连接拨号到目标主机
+//  4. 在隧道连接上完成 SSH 握手
+func (w *Worker) dialViaJumpHost(ctx context.Context) (*ssh.Client, error) {
+	// 解析 ProxyJump 值: [user@]host[:port]
+	jumpUser, jumpHost, jumpPort, err := parseProxyJump(w.session.ProxyJump, w.session.Username)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy jump: %w", err)
+	}
+
+	// 构建目标主机的 SSH 客户端配置
+	targetSSHConfig, err := w.buildSSHConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// 构建跳板机的 SSH 客户端配置（复用相同的认证方式）
+	methods, err := w.authMethods()
+	if err != nil {
+		return nil, fmt.Errorf("build jump host auth methods: %w", err)
+	}
+	jumpSSHConfig := &ssh.ClientConfig{
+		User:            jumpUser,
+		HostKeyCallback: w.hostKeyCallback,
+		Timeout:         30 * time.Second,
+		Config:          targetSSHConfig.Config,
+		Auth:            methods,
+	}
+
+	jumpTarget := fmt.Sprintf("%s:%d", jumpHost, jumpPort)
+	targetAddr := fmt.Sprintf("%s:%d", w.session.Host, w.session.Port)
+
+	log.Info("connecting to jump host", "jump_host", jumpHost, "jump_port", jumpPort, "target", targetAddr)
+
+	// 连接跳板机（通过代理或直连）
+	jumpConn, err := dialViaProxy(w.session.Proxy, jumpTarget)
+	if err != nil {
+		return nil, fmt.Errorf("dial jump host: %w", err)
+	}
+
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		jumpConn.Close()
+		return nil, ctx.Err()
+	default:
+	}
+
+	// 跳板机 SSH 握手
+	jumpSSHConn, jumpChans, jumpReqs, err := ssh.NewClientConn(jumpConn, jumpTarget, jumpSSHConfig)
+	if err != nil {
+		jumpConn.Close()
+		return nil, fmt.Errorf("ssh connect jump host: %w", err)
+	}
+	jumpClient := ssh.NewClient(jumpSSHConn, jumpChans, jumpReqs)
+	defer jumpClient.Close()
+
+	log.Info("connected to jump host, dialing target", "target", targetAddr)
+
+	// 通过跳板机拨号到目标主机
+	conn, err := jumpClient.Dial("tcp", targetAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial target via jump host: %w", err)
+	}
+
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		conn.Close()
+		return nil, ctx.Err()
+	default:
+	}
+
+	// 在隧道连接上完成 SSH 握手
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, targetSSHConfig)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ssh connect via jump: %w", err)
+	}
+
+	client := ssh.NewClient(sshConn, chans, reqs)
+	log.Info("ssh connected via jump host", "host", w.session.Host, "jump", jumpHost)
+
+	return client, nil
+}
+
+// parseProxyJump 解析 ProxyJump 值，格式为 [user@]host[:port]。
+// 如果未指定 user，使用 defaultUser；如果未指定 port，使用 22。
+func parseProxyJump(proxyJump, defaultUser string) (user, host string, port int, err error) {
+	port = 22
+	s := proxyJump
+
+	// 提取 user
+	if idx := strings.Index(s, "@"); idx >= 0 {
+		user = s[:idx]
+		s = s[idx+1:]
+	} else {
+		user = defaultUser
+	}
+
+	// 提取 port（最后一个冒号之后的部分）
+	if idx := strings.LastIndex(s, ":"); idx >= 0 {
+		if p, parseErr := strconv.Atoi(s[idx+1:]); parseErr == nil {
+			port = p
+			s = s[:idx]
+		}
+	}
+
+	host = s
+	if host == "" {
+		return "", "", 0, fmt.Errorf("invalid proxy jump format: %s", proxyJump)
+	}
+	return user, host, port, nil
 }
 
 // sendStatus 发送连接状态事件到 UI（非阻塞）

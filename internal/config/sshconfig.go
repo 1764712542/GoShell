@@ -115,6 +115,7 @@ func ImportSSHConfig() ([]*Session, error) {
 			sess.Username = e.User
 		}
 		sess.Port = e.Port
+		sess.ProxyJump = e.ProxyJump
 		sess.AuthMethod = AuthPublicKey
 
 		// 读取私钥文件内容

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Meatshell Linux 安装脚本
+# GoShell Linux 安装脚本
 # 安装到 /usr/local/bin，并设置桌面图标
 
 set -e
 
-APP_NAME="meatshell"
+APP_NAME="goshell"
 INSTALL_DIR="/usr/local/bin"
 ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
 DESKTOP_DIR="/usr/share/applications"
@@ -29,8 +29,8 @@ if [ -f "assets/icon.png" ]; then
 fi
 
 # 安装 desktop entry
-if [ -f "packaging/linux/meatshell.desktop" ]; then
-  cp "packaging/linux/meatshell.desktop" "${DESKTOP_DIR}/"
+if [ -f "packaging/linux/goshell.desktop" ]; then
+  cp "packaging/linux/goshell.desktop" "${DESKTOP_DIR}/"
 fi
 
 # 更新桌面数据库

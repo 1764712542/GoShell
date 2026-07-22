@@ -1,4 +1,4 @@
-// Package ui 提供 Meatshell 的 Fyne 界面组件，包括主题、标签栏、
+// Package ui 提供 GoShell 的 Fyne 界面组件，包括主题、标签栏、
 // 侧边栏、终端视图、SFTP 浏览器、隧道面板和快捷命令栏。
 package ui
 
@@ -81,7 +81,8 @@ func (r *sparklineRenderer) Layout(size fyne.Size) {
 }
 
 func (r *sparklineRenderer) MinSize() fyne.Size {
-	return fyne.NewSize(40, 20)
+	// 增加最小高度，让 sparkline 在侧边栏中更清晰
+	return fyne.NewSize(40, 40)
 }
 
 func (r *sparklineRenderer) Refresh() {

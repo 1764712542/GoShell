@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=0.1.0
+Type=Application
+Name=GoShell
+GenericName=SSH Terminal Client
+Comment=Lightweight FinalShell-style SSH/terminal client
+Exec=goshell
+Icon=goshell
+Terminal=false
+Categories=Network;TerminalEmulator;System;
+Keywords=ssh;terminal;sftp;remote;

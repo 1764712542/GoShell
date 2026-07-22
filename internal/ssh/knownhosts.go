@@ -47,7 +47,8 @@ func (w *Worker) hostKeyCallback(hostname string, remote net.Addr, key ssh.Publi
 	return w.promptHostKey(hostname, key)
 }
 
-// promptHostKey 发送主机密钥确认请求到 UI，阻塞等待用户响应
+// promptHostKey 发送主机密钥确认请求到 UI，阻塞等待用户响应。
+// 使用 select + ctx.Done() 避免在关闭过程中阻塞。
 func (w *Worker) promptHostKey(hostname string, key ssh.PublicKey) error {
 	keyInfo := &event.HostKeyInfo{
 		Host:        hostname,
@@ -55,12 +56,19 @@ func (w *Worker) promptHostKey(hostname string, key ssh.PublicKey) error {
 		KeyType:     key.Type(),
 	}
 
-	// 发送主机密钥确认事件到 UI
-	w.uiChan <- event.UIEvent{
+	// 发送主机密钥确认事件到 UI（非阻塞，避免关闭时死锁）
+	select {
+	case w.uiChan <- event.UIEvent{
 		TabID:   w.session.ID,
 		Type:    event.EventStatus,
 		Status:  event.StatusHostKeyPrompt,
 		HostKey: keyInfo,
+	}:
+	case <-w.ctx.Done():
+		return fmt.Errorf("主机密钥确认已取消")
+	default:
+		// 通道已满，无法发送
+		return fmt.Errorf("UI 事件通道已满，无法发送主机密钥确认请求")
 	}
 
 	log.Info("waiting for host key confirmation", "host", hostname, "fingerprint", keyInfo.Fingerprint)

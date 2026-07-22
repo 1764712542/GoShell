@@ -1,4 +1,4 @@
-// Package main 是 Meatshell 终端客户端的入口。
+// Package main 是 GoShell 终端客户端的入口。
 // 它初始化日志、配置、国际化、应用控制器和 UI，然后启动主窗口。
 package main
 
@@ -26,7 +26,7 @@ func main() {
 
 	// 初始化日志
 	log.Init(*debug)
-	log.Info("meatshell starting", "version", version)
+	log.Info("goshell starting", "version", version)
 
 	// 创建 Fyne 应用
 	fyneApp := app.New()
@@ -50,11 +50,11 @@ func main() {
 	// 创建主窗口
 	mainWin := ui.NewMainWindow(a)
 
-	log.Info("meatshell ready, showing main window")
+	log.Info("goshell ready, showing main window")
 
 	// 启动应用（阻塞直到窗口关闭）
 	mainWin.Run()
 
-	log.Info("meatshell exited")
+	log.Info("goshell exited")
 	os.Exit(0)
 }

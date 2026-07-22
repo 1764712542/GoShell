@@ -58,16 +58,21 @@ func (pm *ProcessMonitor) Stop() {
 	}
 }
 
-// listAndSend 执行一次进程列表采集并发送事件
+// listAndSend 执行一次进程列表采集并发送事件。
+// 使用非阻塞发送，避免在关闭过程中阻塞 goroutine。
 func (pm *ProcessMonitor) listAndSend() {
 	processes, err := pm.List()
 	if err != nil {
 		log.Warn("process monitor list failed", "err", err)
 		// 采集失败时发送空列表，不中断循环
-		pm.uiChan <- event.UIEvent{
+		select {
+		case pm.uiChan <- event.UIEvent{
 			TabID:     pm.tabID,
 			Type:      event.EventProcess,
 			Processes: []event.ProcessEntry{},
+		}:
+		default:
+			// 通道已满或无人接收，丢弃事件
 		}
 		return
 	}
@@ -78,10 +83,14 @@ func (pm *ProcessMonitor) listAndSend() {
 		entries = append(entries, processes[i].ToProcessEntry())
 	}
 
-	pm.uiChan <- event.UIEvent{
+	select {
+	case pm.uiChan <- event.UIEvent{
 		TabID:     pm.tabID,
 		Type:      event.EventProcess,
 		Processes: entries,
+	}:
+	default:
+		// 通道已满或无人接收，丢弃事件
 	}
 }
 

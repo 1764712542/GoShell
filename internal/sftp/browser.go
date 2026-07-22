@@ -2,6 +2,7 @@ package sftp
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -85,4 +86,29 @@ func (b *Browser) Parent() (string, error) {
 		parent = "/" + parent
 	}
 	return parent, nil
+}
+
+// UploadDir 递归上传本地目录到远程路径
+func (b *Browser) UploadDir(localDir, remoteDir string) error {
+	return b.client.UploadDir(localDir, remoteDir)
+}
+
+// DownloadDir 递归下载远程目录到本地路径
+func (b *Browser) DownloadDir(remoteDir, localDir string) error {
+	return b.client.DownloadDir(remoteDir, localDir)
+}
+
+// ReadFile 读取远程文件内容到内存
+func (b *Browser) ReadFile(remotePath string) ([]byte, error) {
+	return b.client.ReadFile(remotePath)
+}
+
+// WriteFile 将数据写入远程文件（覆盖已有内容）
+func (b *Browser) WriteFile(remotePath string, data []byte) error {
+	return b.client.WriteFile(remotePath, data)
+}
+
+// Chmod 修改远程文件或目录的权限
+func (b *Browser) Chmod(remotePath string, mode os.FileMode) error {
+	return b.client.Chmod(remotePath, mode)
 }

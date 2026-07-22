@@ -7,7 +7,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 )
 
-// Theme 是 Meatshell 的自定义主题，支持深色和浅色两种变体。
+// Theme 是 GoShell 的自定义主题，支持深色和浅色两种变体。
 // 深色主题：背景 #1e1e2e，前景 #cdd6f4，强调 #89b4fa
 // 浅色主题：背景 #eff1f5，前景 #4c4f69，强调 #1e66f5
 type Theme struct {

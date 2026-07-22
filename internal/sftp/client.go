@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -168,6 +169,135 @@ func (c *Client) Stat(path string) (os.FileInfo, error) {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	return info, nil
+}
+
+// UploadDir 递归上传本地目录到远程路径。
+// 遍历 localDir 下的所有文件和子目录，在远程创建对应的目录结构并上传文件。
+func (c *Client) UploadDir(localDir, remoteDir string) error {
+	info, err := os.Stat(localDir)
+	if err != nil {
+		return fmt.Errorf("stat local dir %s: %w", localDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("upload dir: %s is not a directory", localDir)
+	}
+
+	// 确保远程根目录存在
+	if err := c.client.MkdirAll(remoteDir); err != nil {
+		return fmt.Errorf("mkdir remote %s: %w", remoteDir, err)
+	}
+
+	return filepath.Walk(localDir, func(localPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// 计算相对路径并拼接远程路径
+		relPath, err := filepath.Rel(localDir, localPath)
+		if err != nil {
+			return err
+		}
+		remotePath := path.Join(remoteDir, filepath.ToSlash(relPath))
+
+		if info.IsDir() {
+			if err := c.client.MkdirAll(remotePath); err != nil {
+				return fmt.Errorf("mkdir remote %s: %w", remotePath, err)
+			}
+			return nil
+		}
+
+		return c.Upload(localPath, remotePath)
+	})
+}
+
+// DownloadDir 递归下载远程目录到本地路径。
+// 遍历 remoteDir 下的所有文件和子目录，在本地创建对应的目录结构并下载文件。
+func (c *Client) DownloadDir(remoteDir, localDir string) error {
+	// 创建本地根目录
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return fmt.Errorf("mkdir local %s: %w", localDir, err)
+	}
+
+	infos, err := c.client.ReadDir(remoteDir)
+	if err != nil {
+		return fmt.Errorf("read dir %s: %w", remoteDir, err)
+	}
+
+	for _, info := range infos {
+		remotePath := path.Join(remoteDir, info.Name())
+		localPath := filepath.Join(localDir, info.Name())
+
+		if info.IsDir() {
+			if err := c.DownloadDir(remotePath, localPath); err != nil {
+				return err
+			}
+		} else {
+			if err := c.Download(remotePath, localPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// WalkRemote 递归遍历远程目录，返回所有文件（不含目录）的完整路径。
+func (c *Client) WalkRemote(remotePath string) ([]string, error) {
+	infos, err := c.client.ReadDir(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("read dir %s: %w", remotePath, err)
+	}
+
+	var files []string
+	for _, info := range infos {
+		fullPath := path.Join(remotePath, info.Name())
+		if info.IsDir() {
+			subFiles, err := c.WalkRemote(fullPath)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, subFiles...)
+		} else {
+			files = append(files, fullPath)
+		}
+	}
+	return files, nil
+}
+
+// Chmod 修改远程文件或目录的权限
+func (c *Client) Chmod(remotePath string, mode os.FileMode) error {
+	if err := c.client.Chmod(remotePath, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", remotePath, err)
+	}
+	return nil
+}
+
+// ReadFile 读取远程文件内容到内存
+func (c *Client) ReadFile(remotePath string) ([]byte, error) {
+	f, err := c.client.Open(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", remotePath, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", remotePath, err)
+	}
+	return data, nil
+}
+
+// WriteFile 将数据写入远程文件（覆盖已有内容）
+func (c *Client) WriteFile(remotePath string, data []byte) error {
+	f, err := c.client.Create(remotePath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", remotePath, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write %s: %w", remotePath, err)
+	}
+	return nil
 }
 
 // sendProgress 发送传输进度事件，限制 100ms 间隔避免事件洪流。

@@ -29,14 +29,17 @@ func sessionsFilePath() string {
 
 // Store 管理会话的持久化存储
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu        sync.RWMutex
+	sessions  map[string]*Session
+	quickCmds []QuickCmd
 }
 
 func NewStore() *Store {
-	return &Store{
+	s := &Store{
 		sessions: make(map[string]*Session),
 	}
+	initQuickCmds(s)
+	return s
 }
 
 // Load 从磁盘加载会话，自动解密敏感字段

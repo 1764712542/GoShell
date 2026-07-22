@@ -23,6 +23,10 @@ type Emulator struct {
 
 	mu      sync.Mutex // 仅保护 changed
 	changed bool       // 是否有更新需要重绘
+
+	// bracketedPaste 跟踪 DECSET 2004（Bracketed Paste Mode）。
+	// vt10x 库本身不解析 mode 2004，因此由 Emulator 自行维护。
+	bracketedPaste bool
 }
 
 // NewEmulator 创建一个指定尺寸的终端模拟器。
@@ -41,7 +45,10 @@ func NewEmulator(cols, rows int) *Emulator {
 
 // Write 线程安全地写入数据，触发 ANSI 解析并更新内部网格。
 // vt10x 的 Write 内部会加锁，写完后标记 changed=true 通知 UI 重绘。
+// 同时扫描数据流中的 DECSET/DECRST 2004 序列以跟踪 Bracketed Paste Mode。
 func (e *Emulator) Write(data []byte) (int, error) {
+	// 在写入前扫描 mode 2004 控制序列
+	e.scanBracketedPasteMode(data)
 	n, err := e.term.Write(data)
 	if n > 0 {
 		e.mu.Lock()
@@ -49,6 +56,44 @@ func (e *Emulator) Write(data []byte) (int, error) {
 		e.mu.Unlock()
 	}
 	return n, err
+}
+
+// scanBracketedPasteMode 扫描数据流中的 DECSET 2004 / DECRST 2004 序列。
+//   - 启用: ESC [ ? 2004 h
+//   - 禁用: ESC [ ? 2004 l
+//
+// vt10x 不识别 mode 2004，因此需要在外部拦截。
+func (e *Emulator) scanBracketedPasteMode(data []byte) {
+	// 查找 ESC [ ? 2004 h / l
+	for i := 0; i+7 <= len(data); i++ {
+		if data[i] != 0x1b || data[i+1] != '[' || data[i+2] != '?' {
+			continue
+		}
+		// 找到 ESC [ ? 后，读取数字直到 h 或 l
+		j := i + 3
+		for j < len(data) && data[j] >= '0' && data[j] <= '9' {
+			j++
+		}
+		if j >= len(data) {
+			continue
+		}
+		if data[j] == 'h' || data[j] == 'l' {
+			// 解析数字
+			num := 0
+			for k := i + 3; k < j; k++ {
+				num = num*10 + int(data[k]-'0')
+			}
+			if num == 2004 {
+				e.mu.Lock()
+				if data[j] == 'h' {
+					e.bracketedPaste = true
+				} else {
+					e.bracketedPaste = false
+				}
+				e.mu.Unlock()
+			}
+		}
+	}
 }
 
 // Resize 调整终端尺寸。vt10x 的 Resize 内部会加锁。
@@ -119,4 +164,38 @@ func (e *Emulator) Changed() bool {
 // CursorVisible 返回光标是否可见。调用方必须持有 Lock。
 func (e *Emulator) CursorVisible() bool {
 	return e.term.CursorVisible()
+}
+
+// BracketedPaste 返回当前是否启用了 Bracketed Paste Mode (DECSET 2004)。
+// 该方法内部会加锁，不要在 Lock/Unlock 区间内调用。
+func (e *Emulator) BracketedPaste() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.bracketedPaste
+}
+
+// SetBracketedPaste 直接设置 Bracketed Paste Mode 状态。
+// 通常仅在测试或重置终端时使用；正常情况下状态由 DECSET/DECRST 序列驱动。
+func (e *Emulator) SetBracketedPaste(enabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.bracketedPaste = enabled
+}
+
+// MouseTracking 返回当前是否启用了任意鼠标跟踪模式。
+// vt10x 支持 ModeMouseButton / ModeMouseMotion / ModeMouseMany / ModeMouseX10，
+// 任一模式启用即视为鼠标跟踪已激活。
+// 该方法内部会加锁，不要在 Lock/Unlock 区间内调用。
+func (e *Emulator) MouseTracking() bool {
+	e.Lock()
+	defer e.Unlock()
+	return e.term.Mode()&vt10x.ModeMouseMask != 0
+}
+
+// MouseSgr 返回是否启用了 SGR 鼠标编码（DECSET 1006）。
+// 该方法内部会加锁，不要在 Lock/Unlock 区间内调用。
+func (e *Emulator) MouseSgr() bool {
+	e.Lock()
+	defer e.Unlock()
+	return e.term.Mode()&vt10x.ModeMouseSgr != 0
 }

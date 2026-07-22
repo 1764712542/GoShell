@@ -1,4 +1,4 @@
-APP_NAME := meatshell
+APP_NAME := goshell
 MAIN := ./cmd/meatshell
 VERSION := $(shell grep -oP 'version = "\K[^"]+' $(MAIN)/../meatshell 2>/dev/null || echo "0.1.0")
 VERSION := 0.1.0

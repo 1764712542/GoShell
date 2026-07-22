@@ -1,8 +1,8 @@
-# Meatshell Windows 构建脚本
+# GoShell Windows 构建脚本
 # 需要安装 mingw-w64: scoop install mingw 或 choco install mingw
 
 $ErrorActionPreference = "Stop"
-$APP_NAME = "meatshell"
+$APP_NAME = "goshell"
 $MAIN = "./cmd/meatshell"
 
 Write-Host "Building ${APP_NAME} for Windows (amd64)..."

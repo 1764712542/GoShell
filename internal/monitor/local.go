@@ -67,22 +67,31 @@ func (m *LocalMonitor) Stop() {
 	}
 }
 
-// sampleAndSend 执行一次采样并发送事件，失败时发送空数据
+// sampleAndSend 执行一次采样并发送事件，失败时发送空数据。
+// 使用非阻塞发送，避免在关闭过程中阻塞 goroutine。
 func (m *LocalMonitor) sampleAndSend() {
 	metrics, err := m.Sample()
 	if err != nil {
 		log.Warn("local monitor sample failed", "err", err)
-		m.uiChan <- event.UIEvent{
+		select {
+		case m.uiChan <- event.UIEvent{
 			TabID:   m.tabID,
 			Type:    event.EventMonitor,
 			Metrics: &event.MonitorData{},
+		}:
+		default:
+			// 通道已满或无人接收，丢弃事件
 		}
 		return
 	}
-	m.uiChan <- event.UIEvent{
+	select {
+	case m.uiChan <- event.UIEvent{
 		TabID:   m.tabID,
 		Type:    event.EventMonitor,
 		Metrics: metrics.ToMonitorData(),
+	}:
+	default:
+		// 通道已满或无人接收，丢弃事件
 	}
 }
 

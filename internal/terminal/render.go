@@ -11,18 +11,30 @@ import (
 // attrReverse 与 vt10x 内部的反色属性位一致（见 state.go）。
 const attrReverse int16 = 1
 
+// 搜索匹配高亮颜色
+var (
+	// searchHighlightColor 用于所有匹配项的背景色。
+	searchHighlightColor = color.RGBA{R: 0x55, G: 0x55, B: 0x22, A: 0xff}
+	// searchCurrentColor 用于当前匹配项的背景色（更醒目）。
+	searchCurrentColor = color.RGBA{R: 0xAA, G: 0x77, B: 0x00, A: 0xff}
+)
+
 // terminalRenderer 是 TerminalWidget 的渲染器。
 // 每个 cell 由一个 canvas.Rectangle（背景）和一个 canvas.Text（前景字符）组成。
 // 光标也使用一个 canvas.Rectangle，叠在最上层。
 type terminalRenderer struct {
 	widget    *TerminalWidget
-	bg        *canvas.Rectangle     // 整体背景
-	cursor    *canvas.Rectangle     // 光标
-	cellBGs   []*canvas.Rectangle   // 每个 cell 的背景矩形
-	cells     []*canvas.Text        // 每个 cell 的字符（与 cellBGs 一一对应）
-	objects   []fyne.CanvasObject   // 所有需要绘制的对象
-	cellSize  fyne.Size             // 单个字符的尺寸（缓存）
-	lastGlyph []vt10x.Glyph         // 上次绘制时的 glyph，用于脏 cell 追踪
+	bg        *canvas.Rectangle   // 整体背景
+	cursor    *canvas.Rectangle   // 光标
+	cellBGs   []*canvas.Rectangle // 每个 cell 的背景矩形
+	cells     []*canvas.Text      // 每个 cell 的字符（与 cellBGs 一一对应）
+	objects   []fyne.CanvasObject // 所有需要绘制的对象
+	cellSize  fyne.Size           // 单个字符的尺寸（缓存）
+	lastGlyph []vt10x.Glyph       // 上次绘制时的 glyph，用于脏 cell 追踪
+
+	// wasInScrollback 记录上一帧是否处于回滚模式，
+	// 用于在退出回滚模式时强制刷新所有 cell。
+	wasInScrollback bool
 }
 
 // newTerminalRenderer 构造一个 TerminalWidget 的渲染器。
@@ -129,6 +141,9 @@ func (r *terminalRenderer) Destroy() {}
 
 // Refresh 重绘所有 cell。
 // 通过比较 lastGlyph 与当前 glyph 实现脏 cell 追踪，只刷新变化的 cell。
+// 当 scrollOffset > 0 时从回滚缓冲区渲染历史输出。
+// 当正在选择文本时，选中区域使用反色显示。
+// 当有搜索匹配时，匹配文本使用高亮背景色。
 func (r *terminalRenderer) Refresh() {
 	w := r.widget
 	emu := w.emulator
@@ -145,6 +160,21 @@ func (r *terminalRenderer) Refresh() {
 		r.refreshObjects()
 	}
 
+	// 回滚模式：从 scrollback + 屏幕渲染历史输出
+	if w.scrollOffset > 0 && w.scrollback != nil && w.scrollback.Count() > 0 {
+		r.renderScrollbackMode(cols, rows)
+		r.wasInScrollback = true
+		return
+	}
+
+	// 如果刚从回滚模式退出，强制刷新所有 cell
+	if r.wasInScrollback {
+		for i := range r.lastGlyph {
+			r.lastGlyph[i] = vt10x.Glyph{}
+		}
+		r.wasInScrollback = false
+	}
+
 	emu.Lock()
 	defer emu.Unlock()
 
@@ -156,6 +186,18 @@ func (r *terminalRenderer) Refresh() {
 
 	cursor := emu.Cursor()
 	cursorVisible := emu.CursorVisible()
+
+	// 选择或搜索激活时强制刷新所有 cell，确保高亮即时更新
+	if w.selecting || len(w.searchMatches) > 0 {
+		for i := range r.lastGlyph {
+			r.lastGlyph[i] = vt10x.Glyph{}
+		}
+	}
+
+	sbCount := 0
+	if w.scrollback != nil {
+		sbCount = w.scrollback.Count()
+	}
 
 	for y := 0; y < rows; y++ {
 		for x := 0; x < cols; x++ {
@@ -177,6 +219,21 @@ func (r *terminalRenderer) Refresh() {
 			cellBG := r.cellBGs[idx]
 
 			fg, bg := r.resolveColors(glyph)
+
+			// 文本选择：选中区域使用反色
+			if r.isCellSelected(x, y) {
+				fg, bg = bg, fg
+			}
+
+			// 搜索高亮：匹配文本使用特殊背景色
+			absLine := sbCount + y
+			if r.isCellSearchMatch(absLine, x) {
+				bg = searchHighlightColor
+				if r.isCurrentSearchMatch(absLine, x) {
+					bg = searchCurrentColor
+				}
+			}
+
 			char := glyph.Char
 			if char == 0 {
 				char = ' '
@@ -209,6 +266,152 @@ func (r *terminalRenderer) Refresh() {
 	} else {
 		r.cursor.Hide()
 	}
+}
+
+// renderScrollbackMode 从回滚缓冲区渲染历史输出。
+// 视图由 scrollback 行 + 当前屏幕行组成，根据 scrollOffset 定位视口。
+// 回滚区行以纯文本渲染（默认前景/背景色），屏幕行同样以纯文本渲染。
+func (r *terminalRenderer) renderScrollbackMode(cols, rows int) {
+	w := r.widget
+
+	// 获取回滚缓冲区行
+	sbLines := w.scrollback.Lines()
+	sbCount := len(sbLines)
+
+	// 获取当前屏幕行
+	var screenLines []string
+	if w.emulator != nil {
+		screenLines = CaptureScreen(w.emulator.term, cols, rows)
+	}
+
+	totalLines := sbCount + len(screenLines)
+
+	// 视口起始绝对行号
+	startLine := sbCount - w.scrollOffset
+	if startLine < 0 {
+		startLine = 0
+	}
+
+	// 回滚模式下隐藏光标
+	r.cursor.Hide()
+	canvas.Refresh(r.cursor)
+
+	for y := 0; y < rows; y++ {
+		absLine := startLine + y
+
+		var line string
+		if absLine < totalLines {
+			if absLine < sbCount {
+				line = sbLines[absLine]
+			} else {
+				screenIdx := absLine - sbCount
+				if screenIdx < len(screenLines) {
+					line = screenLines[screenIdx]
+				}
+			}
+		}
+
+		lineRunes := []rune(line)
+
+		for x := 0; x < cols; x++ {
+			idx := y*cols + x
+			if idx >= len(r.cells) {
+				break
+			}
+
+			char := ' '
+			if x < len(lineRunes) {
+				ch := lineRunes[x]
+				if ch != 0 {
+					char = ch
+				}
+			}
+
+			fg := w.fg
+			bg := w.bg
+
+			// 文本选择：选中区域使用反色
+			if r.isCellSelected(x, y) {
+				fg, bg = bg, fg
+			}
+
+			// 搜索高亮
+			if r.isCellSearchMatch(absLine, x) {
+				bg = searchHighlightColor
+				if r.isCurrentSearchMatch(absLine, x) {
+					bg = searchCurrentColor
+				}
+			}
+
+			cell := r.cells[idx]
+			cellBG := r.cellBGs[idx]
+
+			cell.Text = string(char)
+			cell.Color = fg
+			cell.TextSize = w.fontSize
+			cell.TextStyle = fyne.TextStyle{Monospace: true}
+
+			if !colorsEqual(bg, w.bg) {
+				cellBG.FillColor = bg
+				cellBG.Show()
+			} else {
+				cellBG.Hide()
+			}
+
+			canvas.Refresh(cellBG)
+			canvas.Refresh(cell)
+		}
+	}
+}
+
+// isCellSelected 判断 cell (x, y) 是否在当前文本选择区域内。
+// 选择区域由 selectStart 和 selectEnd 的像素坐标定义，
+// 先归一化为左上/右下单元格坐标再判断。
+func (r *terminalRenderer) isCellSelected(x, y int) bool {
+	w := r.widget
+	if !w.selecting {
+		return false
+	}
+	startX, startY := w.positionToCell(w.selectStart)
+	endX, endY := w.positionToCell(w.selectEnd)
+	// 归一化：确保 start <= end
+	if startY > endY || (startY == endY && startX > endX) {
+		startX, startY, endX, endY = endX, endY, startX, startY
+	}
+	if y < startY || y > endY {
+		return false
+	}
+	if y == startY && x < startX {
+		return false
+	}
+	if y == endY && x > endX {
+		return false
+	}
+	return true
+}
+
+// isCellSearchMatch 判断绝对行 absLine、列 x 的 cell 是否属于任意搜索匹配。
+func (r *terminalRenderer) isCellSearchMatch(absLine, x int) bool {
+	w := r.widget
+	if len(w.searchMatches) == 0 {
+		return false
+	}
+	for _, m := range w.searchMatches {
+		if m.line == absLine && x >= m.col && x < m.end {
+			return true
+		}
+	}
+	return false
+}
+
+// isCurrentSearchMatch 判断绝对行 absLine、列 x 的 cell 是否属于当前搜索匹配。
+func (r *terminalRenderer) isCurrentSearchMatch(absLine, x int) bool {
+	w := r.widget
+	if len(w.searchMatches) == 0 || w.searchCurrent < 0 || w.searchCurrent >= len(w.searchMatches) {
+		return false
+	}
+	m := w.searchMatches[w.searchCurrent]
+	return m.line == absLine && x >= m.col && x < m.end
 }
 
 // resolveColors 将 vt10x.Glyph 的 FG/BG 解析为 color.Color。

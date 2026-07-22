@@ -1,13 +1,13 @@
-project_name: meatshell
+project_name: goshell
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: meatshell
+  - id: goshell
     main: ./cmd/meatshell
-    binary: meatshell
+    binary: goshell
     env:
       - CGO_ENABLED=1
     goos:
@@ -22,9 +22,9 @@ builds:
     hooks:
       darwin_amd64:
         post: lipo -create -output {{ .Path }}-universal {{ .Path }} {{ .Path }}-arm64
-  - id: meatshell-windows
+  - id: goshell-windows
     main: ./cmd/meatshell
-    binary: meatshell.exe
+    binary: goshell.exe
     env:
       - CGO_ENABLED=1
       - CC=x86_64-w64-mingw32-gcc
@@ -36,7 +36,7 @@ builds:
 
 archives:
   - id: macos
-    builds: [meatshell]
+    builds: [goshell]
     name_template: "{{ .ProjectName }}-{{ .Version }}-macos-{{ .Arch }}"
     format: zip
     files:
@@ -44,16 +44,16 @@ archives:
       - assets/icon.png
       - lang/*
   - id: linux
-    builds: [meatshell]
+    builds: [goshell]
     name_template: "{{ .ProjectName }}-{{ .Version }}-linux-{{ .Arch }}"
     format: tar.gz
     files:
-      - packaging/linux/meatshell.desktop
+      - packaging/linux/goshell.desktop
       - packaging/linux/install.sh
       - assets/icon.png
       - lang/*
   - id: windows
-    builds: [meatshell-windows]
+    builds: [goshell-windows]
     name_template: "{{ .ProjectName }}-{{ .Version }}-windows-x86_64"
     format: zip
     files:

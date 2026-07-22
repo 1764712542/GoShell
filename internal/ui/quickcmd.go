@@ -64,8 +64,15 @@ func (q *QuickCmdBar) CreateRenderer() fyne.WidgetRenderer {
 		q.entry.SetText("")
 	})
 
+	// 按钮组（有间距）
+	buttonGroup := container.NewHBox(sendBtn, broadcastBtn)
+
+	// 输入框 + 按钮组，中间有分隔线
 	content := container.NewBorder(nil, nil, nil,
-		container.NewHBox(sendBtn, broadcastBtn),
+		container.NewHBox(
+			widget.NewSeparator(),
+			buttonGroup,
+		),
 		q.entry,
 	)
 	return widget.NewSimpleRenderer(content)
@@ -83,7 +90,10 @@ func (q *QuickCmdBar) SetOnExecute(fn func(cmd string)) { q.onExecute = fn }
 // SetOnBroadcast 设置广播命令回调
 func (q *QuickCmdBar) SetOnBroadcast(fn func(cmd string)) { q.onBroadcast = fn }
 
-// Focus 设置焦点到输入框
+// Focus 设置焦点到输入框。
+// 使用 Canvas.Focus 而非直接调用 entry.FocusGained()（后者是内部回调，不应直接调用）。
 func (q *QuickCmdBar) Focus() {
-	q.entry.FocusGained()
+	if c := fyne.CurrentApp().Driver().CanvasForObject(q.entry); c != nil {
+		c.Focus(q.entry)
+	}
 }

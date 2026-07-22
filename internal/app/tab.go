@@ -14,13 +14,18 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/zhuyao/meatshell/internal/config"
+	"github.com/zhuyao/meatshell/internal/ftp"
+	"github.com/zhuyao/meatshell/internal/localterminal"
 	"github.com/zhuyao/meatshell/internal/log"
 	"github.com/zhuyao/meatshell/internal/monitor"
+	"github.com/zhuyao/meatshell/internal/mosh"
+	"github.com/zhuyao/meatshell/internal/rlogin"
 	"github.com/zhuyao/meatshell/internal/serial"
 	"github.com/zhuyao/meatshell/internal/sftp"
 	"github.com/zhuyao/meatshell/internal/ssh"
 	"github.com/zhuyao/meatshell/internal/telnet"
 	"github.com/zhuyao/meatshell/internal/terminal"
+	"github.com/zhuyao/meatshell/internal/terminallog"
 )
 
 // Tab 管理单个会话标签页的完整生命周期，包括连接建立、
@@ -45,6 +50,16 @@ type Tab struct {
 	closed    bool
 	mu        sync.Mutex
 
+	// 终端日志
+	logger     *terminallog.Logger
+	logEnabled bool
+
+	// 自动重连
+	reconnectAttempts   int
+	maxReconnect       int
+	reconnectDelay     time.Duration
+	reconnecting       bool
+
 	// UI 组件
 	statusBar *widget.Label
 
@@ -58,9 +73,11 @@ type Tab struct {
 // NewTab 创建一个新的标签页。uiChan 用于接收后端事件。
 func NewTab(sess *config.Session, uiChan chan UIEvent) *Tab {
 	return &Tab{
-		ID:      sess.ID,
-		session: sess,
-		uiChan:  uiChan,
+		ID:             sess.ID,
+		session:        sess,
+		uiChan:         uiChan,
+		maxReconnect:  3,
+		reconnectDelay: 5 * time.Second,
 	}
 }
 
@@ -106,6 +123,14 @@ func (t *Tab) Start() error {
 		return t.startSerial()
 	case config.SessionTelnet:
 		return t.startTelnet()
+	case config.SessionLocal:
+		return t.startLocal()
+	case config.SessionRLogin:
+		return t.startRLogin()
+	case config.SessionFTP:
+		return t.startFTP()
+	case config.SessionMosh:
+		return t.startMosh()
 	default:
 		return fmt.Errorf("unsupported session type: %s", t.session.Type)
 	}
@@ -172,6 +197,85 @@ func (t *Tab) startTelnet() error {
 	return nil
 }
 
+// startLocal 启动本地终端会话（通过 PTY 运行系统 shell）
+func (t *Tab) startLocal() error {
+	worker := localterminal.NewWorker(t.session.Shell, t.uiChan, t.ID)
+	t.worker = worker
+
+	// 创建终端组件，键盘输入转发到本地 PTY
+	t.termWidget = terminal.NewTerminalWidget(t.emulator, worker.SendInput)
+
+	// 构建默认容器
+	t.buildDefaultContainer()
+
+	// 异步发起连接
+	go func() {
+		if err := worker.Connect(t.ctx); err != nil {
+			log.Warn("local terminal connect failed", "shell", t.session.Shell, "err", err)
+		}
+	}()
+	return nil
+}
+
+// startRLogin 启动 RLogin 会话
+func (t *Tab) startRLogin() error {
+	port := t.session.Port
+	if port == 0 {
+		port = 513
+	}
+	worker := rlogin.NewWorker(t.session.Host, port, t.uiChan, t.ID)
+	t.worker = worker
+
+	t.termWidget = terminal.NewTerminalWidget(t.emulator, worker.SendInput)
+	t.buildDefaultContainer()
+
+	go func() {
+		if err := worker.Connect(t.ctx); err != nil {
+			log.Warn("rlogin connect failed", "host", t.session.Host, "err", err)
+		}
+	}()
+	return nil
+}
+
+// startFTP 启动 FTP 会话（非终端协议，仅文件传输）
+func (t *Tab) startFTP() error {
+	port := t.session.Port
+	if port == 0 {
+		port = 21
+	}
+	worker := ftp.NewWorker(t.session.Host, port, t.session.Username, t.session.Password, t.uiChan, t.ID)
+	t.worker = worker
+
+	// FTP 不是终端协议，显示提示信息
+	t.termWidget = terminal.NewTerminalWidget(t.emulator, func(data []byte) {
+		// FTP 不接受终端输入
+	})
+	t.buildDefaultContainer()
+
+	go func() {
+		if err := worker.Connect(t.ctx); err != nil {
+			log.Warn("ftp connect failed", "host", t.session.Host, "err", err)
+		}
+	}()
+	return nil
+}
+
+// startMosh 启动 Mosh 会话
+func (t *Tab) startMosh() error {
+	worker := mosh.NewWorker(t.session, t.uiChan)
+	t.worker = worker
+
+	t.termWidget = terminal.NewTerminalWidget(t.emulator, worker.SendInput)
+	t.buildDefaultContainer()
+
+	go func() {
+		if err := worker.Connect(t.ctx); err != nil {
+			log.Warn("mosh connect failed", "host", t.session.Host, "err", err)
+		}
+	}()
+	return nil
+}
+
 // buildDefaultContainer 构建默认显示容器：终端居中 + 底部状态栏
 func (t *Tab) buildDefaultContainer() {
 	t.statusBar = widget.NewLabel("就绪")
@@ -217,6 +321,10 @@ func (t *Tab) HandleEvent(evt UIEvent) {
 		if len(evt.TerminalData) > 0 {
 			t.emulator.Write(evt.TerminalData)
 			t.termWidget.TriggerRefresh()
+			// 终端日志记录
+			if t.logEnabled && t.logger != nil {
+				t.logger.Write(evt.TerminalData)
+			}
 		}
 
 	case EventStatus:
@@ -229,12 +337,18 @@ func (t *Tab) HandleEvent(evt UIEvent) {
 		case StatusConnected:
 			t.mu.Lock()
 			t.connected = true
+			t.reconnectAttempts = 0
+			t.reconnecting = false
 			t.mu.Unlock()
 			t.startPostConnect()
 		case StatusDisconnected:
 			t.mu.Lock()
 			t.connected = false
 			t.mu.Unlock()
+			// 自动重连（仅 SSH 会话，非主动关闭）
+			if !t.closed && t.session.Type == config.SessionSSH {
+				go t.tryReconnect()
+			}
 		}
 		// 通知 UI 层
 		if t.OnStatus != nil {
@@ -285,6 +399,11 @@ func (t *Tab) Stop() {
 		t.sftpClient.Close()
 	}
 
+	// 关闭终端日志
+	if t.logger != nil {
+		t.logger.Close()
+	}
+
 	// 取消 context
 	if t.cancel != nil {
 		t.cancel()
@@ -297,6 +416,14 @@ func (t *Tab) Stop() {
 	case *serial.Worker:
 		w.Close()
 	case *telnet.Worker:
+		w.Close()
+	case *localterminal.Worker:
+		w.Close()
+	case *rlogin.Worker:
+		w.Close()
+	case *ftp.Worker:
+		w.Close()
+	case *mosh.Worker:
 		w.Close()
 	}
 
@@ -312,14 +439,31 @@ func (t *Tab) SendInput(data []byte) {
 		w.SendInput(data)
 	case *telnet.Worker:
 		w.SendInput(data)
+	case *localterminal.Worker:
+		w.SendInput(data)
+	case *rlogin.Worker:
+		w.SendInput(data)
+	case *ftp.Worker:
+		w.SendInput(data)
+	case *mosh.Worker:
+		w.SendInput(data)
 	}
 }
 
-// Resize 调整终端窗口大小（仅 SSH 支持）
+// Resize 调整终端窗口大小
 func (t *Tab) Resize(cols, rows int) {
-	if w, ok := t.worker.(*ssh.Worker); ok {
+	switch w := t.worker.(type) {
+	case *ssh.Worker:
 		if err := w.Resize(cols, rows); err != nil {
 			log.Warn("resize terminal failed", "err", err)
+		}
+	case *localterminal.Worker:
+		if err := w.Resize(cols, rows); err != nil {
+			log.Warn("resize local terminal failed", "err", err)
+		}
+	case *mosh.Worker:
+		if err := w.Resize(cols, rows); err != nil {
+			log.Warn("resize mosh terminal failed", "err", err)
 		}
 	}
 	t.termWidget.SetSize(cols, rows)
@@ -361,5 +505,124 @@ func (t *Tab) AddTunnel(tunnelType, localAddr, remoteAddr string) error {
 func (t *Tab) StopTunnels() {
 	if w, ok := t.worker.(*ssh.Worker); ok {
 		w.StopTunnels()
+	}
+}
+
+// SetLogEnabled 开启/关闭终端日志记录
+func (t *Tab) SetLogEnabled(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if enabled && t.logger == nil {
+		// 创建日志文件
+		logger, err := terminallog.NewLogger(t.session.Name)
+		if err != nil {
+			log.Error("failed to create terminal logger", "err", err)
+			return
+		}
+		// 写入头部信息
+		hostInfo := ""
+		if t.session.Type != config.SessionLocal {
+			hostInfo = fmt.Sprintf("%s@%s:%d", t.session.Username, t.session.Host, t.session.Port)
+		} else {
+			hostInfo = "local terminal"
+		}
+		logger.WriteHeader(hostInfo)
+		t.logger = logger
+	}
+	t.logEnabled = enabled
+}
+
+// IsLogEnabled 返回终端日志是否已开启
+func (t *Tab) IsLogEnabled() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.logEnabled
+}
+
+// LogPath 返回终端日志文件路径（如已开启）
+func (t *Tab) LogPath() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.logger != nil {
+		return t.logger.Path()
+	}
+	return ""
+}
+
+// SetReconnectConfig 设置自动重连参数
+func (t *Tab) SetReconnectConfig(maxAttempts int, delay time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.maxReconnect = maxAttempts
+	t.reconnectDelay = delay
+}
+
+// tryReconnect 尝试自动重连（带指数退避）
+func (t *Tab) tryReconnect() {
+	t.mu.Lock()
+	if t.closed || t.reconnecting {
+		t.mu.Unlock()
+		return
+	}
+	if t.reconnectAttempts >= t.maxReconnect {
+		t.reconnecting = false
+		t.mu.Unlock()
+		// 通知 UI 层重连失败
+		if t.OnStatus != nil {
+			t.OnStatus(StatusError, "自动重连失败：已达最大重试次数")
+		}
+		return
+	}
+	t.reconnecting = true
+	t.reconnectAttempts++
+	attempt := t.reconnectAttempts
+	delay := t.reconnectDelay * time.Duration(1<<(attempt-1)) // 指数退避
+	t.mu.Unlock()
+
+	log.Info("attempting reconnect", "id", t.ID, "attempt", attempt, "delay", delay)
+
+	// 通知 UI 层正在重连
+	if t.OnStatus != nil {
+		t.OnStatus(StatusConnecting, fmt.Sprintf("正在重连... (第 %d 次)", attempt))
+	}
+
+	// 等待延迟
+	select {
+	case <-time.After(delay):
+	case <-t.ctx.Done():
+		t.mu.Lock()
+		t.reconnecting = false
+		t.mu.Unlock()
+		return
+	}
+
+	t.mu.Lock()
+	if t.closed {
+		t.reconnecting = false
+		t.mu.Unlock()
+		return
+	}
+	t.mu.Unlock()
+
+	// 重新创建 context 并重新连接
+	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.emulator = terminal.NewEmulator(80, 24)
+
+	// 根据会话类型重新启动
+	switch t.session.Type {
+	case config.SessionSSH:
+		worker := ssh.NewWorker(t.session, t.uiChan)
+		t.worker = worker
+		t.termWidget = terminal.NewTerminalWidget(t.emulator, worker.SendInput)
+		go func() {
+			if err := worker.Connect(t.ctx); err != nil {
+				log.Warn("reconnect failed", "host", t.session.Host, "err", err)
+			}
+		}()
+	default:
+		// 非 SSH 会话不自动重连
+		t.mu.Lock()
+		t.reconnecting = false
+		t.mu.Unlock()
 	}
 }

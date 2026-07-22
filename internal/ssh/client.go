@@ -10,13 +10,9 @@ import (
 	"github.com/zhuyao/meatshell/internal/log"
 )
 
-// dial 建立 SSH 连接并返回 ssh.Client。
-// 流程：
-//  1. 构建 SSH 客户端配置（认证方法、主机密钥校验）
-//  2. 通过代理（如有）或直连建立 TCP 连接
-//  3. 调用 ssh.NewClientConn 完成 SSH 握手
-func (w *Worker) dial(ctx context.Context) (*ssh.Client, error) {
-	// 构建 SSH 客户端配置
+// buildSSHConfig 构建 SSH 客户端配置（认证方法、主机密钥校验、加密套件）。
+// 供 dial() 和 dialViaJumpHost() 共用。
+func (w *Worker) buildSSHConfig() (*ssh.ClientConfig, error) {
 	sshConfig := &ssh.ClientConfig{
 		User:            w.session.Username,
 		HostKeyCallback: w.hostKeyCallback,
@@ -41,6 +37,26 @@ func (w *Worker) dial(ctx context.Context) (*ssh.Client, error) {
 		return nil, fmt.Errorf("build auth methods: %w", err)
 	}
 	sshConfig.Auth = methods
+
+	return sshConfig, nil
+}
+
+// dial 建立 SSH 连接并返回 ssh.Client。
+// 流程：
+//  1. 构建 SSH 客户端配置（认证方法、主机密钥校验）
+//  2. 如果配置了 ProxyJump，通过跳板机建立连接；否则通过代理（如有）或直连
+//  3. 调用 ssh.NewClientConn 完成 SSH 握手
+func (w *Worker) dial(ctx context.Context) (*ssh.Client, error) {
+	// 如果配置了跳板机，通过跳板机建立连接
+	if w.session.ProxyJump != "" {
+		return w.dialViaJumpHost(ctx)
+	}
+
+	// 构建 SSH 客户端配置
+	sshConfig, err := w.buildSSHConfig()
+	if err != nil {
+		return nil, err
+	}
 
 	// 构建目标地址
 	target := fmt.Sprintf("%s:%d", w.session.Host, w.session.Port)

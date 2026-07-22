@@ -23,11 +23,16 @@ type App struct {
 	store   *config.Store
 	i18n    *i18n.Manager
 	uiChan  chan UIEvent
+	done    chan struct{} // 用于通知 eventLoop 退出
+	closed  bool          // 标记是否已关闭，防止重复关闭
 
 	tabs      map[string]*Tab
 	activeTab string
 	tabList   []string // 保持标签页顺序
 	mu        sync.Mutex
+
+	// 同步输入模式：开启后，在任一终端输入的命令会同步发送到所有已连接终端
+	syncMode bool
 
 	// UI 回调（由 UI 层设置，可为 nil）
 	OnTabCreated    func(tab *Tab)                              // 新标签页创建
@@ -35,6 +40,7 @@ type App struct {
 	OnTabSwitched   func(tabID string)                          // 标签页切换
 	OnMetricsUpdate func(m *MonitorData)                        // 本机监控指标更新
 	OnAllTabsClosed func()                                      // 所有标签页关闭（显示欢迎页）
+	OnSyncModeChanged func(enabled bool)                       // 同步输入模式切换
 }
 
 // New 创建应用控制器
@@ -44,6 +50,7 @@ func New(fyneApp fyne.App, store *config.Store, i18nMgr *i18n.Manager) *App {
 		store:   store,
 		i18n:    i18nMgr,
 		uiChan:  make(chan UIEvent, 2048),
+		done:    make(chan struct{}),
 		tabs:    make(map[string]*Tab),
 	}
 }
@@ -106,33 +113,39 @@ func (a *App) Run() {
 
 // eventLoop 消费 uiChan 中的事件，分发到对应标签页。
 // 所有 UI 操作通过 fyne.Do 在主线程执行。
+// 通过 done channel 安全退出，不关闭 uiChan（避免后端 goroutine 发送到已关闭 channel 导致 panic）。
 func (a *App) eventLoop() {
-	for evt := range a.uiChan {
-		// 本机监控事件（特殊 tabID）
-		if evt.TabID == localMonitorTabID {
-			a.handleLocalEvent(evt)
-			continue
-		}
+	for {
+		select {
+		case <-a.done:
+			log.Info("event loop exited")
+			return
+		case evt := <-a.uiChan:
+			// 本机监控事件（特殊 tabID）
+			if evt.TabID == localMonitorTabID {
+				a.handleLocalEvent(evt)
+				continue
+			}
 
-		a.mu.Lock()
-		tab, ok := a.tabs[evt.TabID]
-		a.mu.Unlock()
-		if !ok {
-			continue
-		}
+			a.mu.Lock()
+			tab, ok := a.tabs[evt.TabID]
+			a.mu.Unlock()
+			if !ok {
+				continue
+			}
 
-		// 在主线程处理事件
-		evtCopy := evt
-		fyne.Do(func() {
-			tab.HandleEvent(evtCopy)
-		})
+			// 在主线程处理事件
+			evtCopy := evt
+			fyne.Do(func() {
+				tab.HandleEvent(evtCopy)
+			})
 
-		// 需要窗口访问的特殊处理
-		if evt.Type == EventStatus {
-			a.handleStatusEvent(tab, evt)
+			// 需要窗口访问的特殊处理
+			if evt.Type == EventStatus {
+				a.handleStatusEvent(tab, evt)
+			}
 		}
 	}
-	log.Info("event loop exited")
 }
 
 // handleLocalEvent 处理本机监控事件
@@ -297,18 +310,78 @@ func (a *App) BroadcastCommand(cmd string) {
 	log.Info("broadcast command", "cmd", cmd, "tabs", len(tabs))
 }
 
-// SendCommand 向当前活动标签页发送命令
+// SendCommand 向当前活动标签页发送命令。
+// 如果同步输入模式开启，同时向所有已连接标签页发送。
 func (a *App) SendCommand(cmd string) {
+	data := []byte(cmd + "\n")
+	if a.syncMode {
+		a.BroadcastCommand(cmd)
+		return
+	}
 	tab := a.ActiveTab()
 	if tab == nil {
 		return
 	}
-	tab.SendInput([]byte(cmd + "\n"))
+	tab.SendInput(data)
 }
 
-// Shutdown 关闭所有标签页并清理资源
+// SendInputToActive 向当前活动标签页发送原始输入（不自动加换行）。
+// 如果同步输入模式开启，同时发送到所有已连接标签页。
+func (a *App) SendInputToActive(data []byte) {
+	if a.syncMode {
+		a.mu.Lock()
+		tabs := make([]*Tab, 0, len(a.tabs))
+		for _, tab := range a.tabs {
+			tabs = append(tabs, tab)
+		}
+		a.mu.Unlock()
+		for _, tab := range tabs {
+			tab.SendInput(data)
+		}
+		return
+	}
+	tab := a.ActiveTab()
+	if tab == nil {
+		return
+	}
+	tab.SendInput(data)
+}
+
+// SetSyncMode 设置同步输入模式
+func (a *App) SetSyncMode(enabled bool) {
+	a.mu.Lock()
+	a.syncMode = enabled
+	a.mu.Unlock()
+	if a.OnSyncModeChanged != nil {
+		fyne.Do(func() {
+			a.OnSyncModeChanged(enabled)
+		})
+	}
+	log.Info("sync mode changed", "enabled", enabled)
+}
+
+// IsSyncMode 返回同步输入模式是否开启
+func (a *App) IsSyncMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.syncMode
+}
+
+// ToggleSyncMode 切换同步输入模式
+func (a *App) ToggleSyncMode() {
+	a.SetSyncMode(!a.syncMode)
+}
+
+// Shutdown 关闭所有标签页并清理资源。
+// 通过关闭 done channel 通知 eventLoop 退出，不关闭 uiChan，
+// 避免后端 goroutine 向已关闭 channel 发送数据导致 panic。
 func (a *App) Shutdown() {
 	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return
+	}
+	a.closed = true
 	tabs := make([]*Tab, 0, len(a.tabs))
 	for _, tab := range a.tabs {
 		tabs = append(tabs, tab)
@@ -318,12 +391,13 @@ func (a *App) Shutdown() {
 	a.activeTab = ""
 	a.mu.Unlock()
 
+	// 停止所有标签页（取消 context，后端 goroutine 会退出）
 	for _, tab := range tabs {
 		tab.Stop()
 	}
 
-	// 关闭事件通道
-	close(a.uiChan)
+	// 通知 eventLoop 退出（不关闭 uiChan，避免 panic）
+	close(a.done)
 }
 
 // UIChan 返回 UI 事件通道（供 UI 层创建本机监控器等使用）
