@@ -46,7 +46,8 @@ jobs:
 
       - name: Package
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VERSION="${{ inputs.tag }}"
+          VERSION="${VERSION:-${GITHUB_REF_NAME}}"
           mkdir -p dist/goshell-${VERSION}-linux-amd64
           cp goshell dist/goshell-${VERSION}-linux-amd64/
           cp packaging/linux/goshell.desktop dist/goshell-${VERSION}-linux-amd64/ 2>/dev/null || true
@@ -87,7 +88,8 @@ jobs:
 
       - name: Package
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VERSION="${{ inputs.tag }}"
+          VERSION="${VERSION:-${GITHUB_REF_NAME}}"
           ARCH=${{ matrix.goarch }}
           mkdir -p dist/goshell-${VERSION}-macos-${ARCH}
           cp goshell dist/goshell-${VERSION}-macos-${ARCH}/
@@ -131,7 +133,8 @@ jobs:
 
       - name: Package
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VERSION="${{ inputs.tag }}"
+          VERSION="${VERSION:-${GITHUB_REF_NAME}}"
           mkdir -p dist/goshell-${VERSION}-windows-x86_64
           cp goshell.exe dist/goshell-${VERSION}-windows-x86_64/
           cp assets/icon.png dist/goshell-${VERSION}-windows-x86_64/ 2>/dev/null || true
