@@ -15,7 +15,7 @@ func Init(debug bool) {
 	os.MkdirAll(logDir, 0755)
 
 	logFile, err := os.OpenFile(filepath.Join(logDir, "meatshell.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		slog.Error("failed to open log file, using stderr only", "err", err)
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))

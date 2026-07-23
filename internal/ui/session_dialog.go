@@ -32,6 +32,7 @@ type SessionDialog struct {
 	termTypeEntry   *widget.Entry
 	fontSizeEntry   *widget.Entry
 	shellEntry      *widget.Entry // 本地终端 shell 路径
+	agentForwardingCheck *widget.Check // SSH Agent Forwarding
 
 	// 代理字段
 	proxyEnabled  *widget.Check
@@ -135,6 +136,10 @@ func (d *SessionDialog) buildFields() {
 	d.shellEntry.SetPlaceHolder("留空则自动检测（如 /bin/bash）")
 	d.shellEntry.SetText(s.Shell)
 
+	// SSH Agent Forwarding 复选框
+	d.agentForwardingCheck = widget.NewCheck("启用 Agent Forwarding", nil)
+	d.agentForwardingCheck.SetChecked(s.AgentForwarding)
+
 	// 代理字段初始化
 	d.proxyEnabled = widget.NewCheck("通过代理连接", nil)
 	d.proxyType = widget.NewSelect([]string{"socks5", "http"}, nil)
@@ -225,6 +230,7 @@ func (d *SessionDialog) Show() {
 				&widget.FormItem{Text: "密码", Widget: d.passwordEntry},
 				&widget.FormItem{Text: "私钥", Widget: d.privateKeyEntry},
 				&widget.FormItem{Text: "私钥口令", Widget: d.passphraseEntry},
+				&widget.FormItem{Text: "Agent 转发", Widget: d.agentForwardingCheck},
 			)
 		}
 
@@ -311,6 +317,9 @@ func (d *SessionDialog) save() {
 	} else {
 		s.Proxy = nil
 	}
+
+	// 保存 Agent Forwarding 设置
+	s.AgentForwarding = d.agentForwardingCheck.Checked
 
 	// 认证方式已通过 select 回调设置
 	// 类型已通过 select 回调设置

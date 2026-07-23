@@ -17,7 +17,25 @@ import (
 
 	"github.com/zhuyao/meatshell/internal/app"
 	"github.com/zhuyao/meatshell/internal/sftp"
+	"github.com/zhuyao/meatshell/internal/terminal"
 )
+
+// SplitDirection 表示终端 pane 的拆分方向。
+type SplitDirection int
+
+const (
+	// SplitHorizontal 水平拆分（左右两个 pane）
+	SplitHorizontal SplitDirection = iota
+	// SplitVertical 垂直拆分（上下两个 pane）
+	SplitVertical
+)
+
+// Pane 表示一个终端面板。
+// 拆分时第二个 Pane 共享主 pane 的 emulator，作为只读镜像显示相同内容。
+type Pane struct {
+	termWidget *terminal.TerminalWidget
+	container  *fyne.Container
+}
 
 // TerminalView 是单个标签页的完整视图容器，组合终端组件、SFTP 面板和隧道面板。
 // 通过顶部工具栏切换显示模式：仅终端 / 终端+SFTP / 终端+隧道。
@@ -36,6 +54,11 @@ type TerminalView struct {
 	errorLabel  *canvas.Text    // 错误消息文本
 	onRetry     func()          // 重试回调（由 window.go 设置）
 	onClose     func()          // 关闭回调（由 window.go 设置）
+
+	// 终端 pane 拆分支持（最简实现：最多 2 个 pane，第二个为只读镜像）
+	mirrorPane *terminal.TerminalWidget // 拆分时创建的镜像 pane（共享 emulator）
+	splitDir   SplitDirection          // 当前拆分方向
+	hasSplit   bool                    // 是否已拆分
 }
 
 // ViewMode 表示终端视图的显示模式
@@ -52,8 +75,8 @@ var (
 	colorFrostLayer1 = color.RGBA{R: 0x1e, G: 0x1e, B: 0x2e, A: 0x80} // 最底层，较深
 	colorFrostLayer2 = color.RGBA{R: 0x30, G: 0x30, B: 0x44, A: 0x60} // 中间层
 	colorFrostLayer3 = color.RGBA{R: 0x45, G: 0x47, B: 0x5a, A: 0x40} // 顶层，较浅
-	colorErrorText   = color.RGBA{R: 0xed, G: 0x87, B: 0x96, A: 0xff} // 错误文本（红色）
-	colorConnecting  = color.RGBA{R: 0xf9, G: 0xe2, B: 0xaf, A: 0xff} // 连接中文本（橙色）
+	colorErrorText   = color.RGBA{R: 0xff, G: 0x45, B: 0x3a, A: 0xff} // macOS 系统红
+	colorConnecting  = color.RGBA{R: 0xff, G: 0x9f, B: 0x0a, A: 0xff} // macOS 系统橙
 )
 
 // NewTerminalView 创建终端视图容器。
@@ -361,6 +384,123 @@ func (v *TerminalView) FocusTerminal() {
 	if v.win != nil && v.tab != nil {
 		v.tab.FocusTerminal(v.win)
 	}
+}
+
+// RebuildTermBox 重建终端组件容器，引用 tab 当前最新的 termWidget。
+// 在自动重连成功后调用：tab.tryReconnect 已创建新的 termWidget，
+// 但本视图的 termBox 仍持有旧 widget 引用（致命问题 #2），
+// 导致用户看到旧画面且输入无响应。此方法在 UI 主线程中调用。
+func (v *TerminalView) RebuildTermBox() {
+	if v.termBox == nil || v.tab == nil {
+		return
+	}
+	// 重连会替换 emulator 与 termWidget，镜像 pane 已失效，丢弃拆分状态
+	v.resetSplitState()
+	v.termBox.RemoveAll()
+	if tw := v.tab.TermWidget(); tw != nil {
+		v.termBox.Add(tw)
+	} else {
+		v.termBox.Add(widget.NewLabel("（无终端组件）"))
+	}
+	v.termBox.Refresh()
+	v.content.Refresh()
+}
+
+// HasSplit 返回当前是否已拆分终端 pane
+func (v *TerminalView) HasSplit() bool { return v.hasSplit }
+
+// SplitDirection 返回当前拆分方向（未拆分时返回 SplitHorizontal 作为零值）
+func (v *TerminalView) SplitDirection() SplitDirection { return v.splitDir }
+
+// SplitHorizontal 将当前终端水平拆分为左右两个 pane。
+// 第二个 pane 为只读镜像，共享主 pane 的 emulator。
+// 已拆分时不再拆分（最简实现：最多 2 个 pane）。
+func (v *TerminalView) SplitHorizontal() {
+	v.applySplit(SplitHorizontal)
+}
+
+// SplitVertical 将当前终端垂直拆分为上下两个 pane。
+// 第二个 pane 为只读镜像，共享主 pane 的 emulator。
+// 已拆分时不再拆分（最简实现：最多 2 个 pane）。
+func (v *TerminalView) SplitVertical() {
+	v.applySplit(SplitVertical)
+}
+
+// applySplit 执行实际拆分逻辑。
+// 主 pane 是 tab 当前的 termWidget；镜像 pane 新建一个 TerminalWidget，
+// 共享同一 emulator，输入回调为空（只读），并通过 tab.OnTerminalRefresh
+// 在 emulator 写入新数据时同步刷新。
+func (v *TerminalView) applySplit(dir SplitDirection) {
+	if v.hasSplit {
+		return
+	}
+	if v.tab == nil {
+		return
+	}
+	mainWidget := v.tab.TermWidget()
+	emu := v.tab.Emulator()
+	if mainWidget == nil || emu == nil {
+		return
+	}
+	// 创建镜像 pane：共享 emulator，输入丢弃（仅主 pane 接收输入）
+	mirror := terminal.NewTerminalWidget(emu, func([]byte) {})
+	v.mirrorPane = mirror
+	v.splitDir = dir
+	v.hasSplit = true
+
+	// 重建 termBox：用 HSplit/VSplit 包两个 widget
+	var split fyne.CanvasObject
+	switch dir {
+	case SplitHorizontal:
+		split = container.NewHSplit(mainWidget, mirror)
+		split.(*container.Split).SetOffset(0.5)
+	case SplitVertical:
+		split = container.NewVSplit(mainWidget, mirror)
+		split.(*container.Split).SetOffset(0.5)
+	}
+	v.termBox.RemoveAll()
+	v.termBox.Add(split)
+
+	// 注册刷新回调：emulator 写入新数据时同步刷新镜像 pane
+	v.tab.OnTerminalRefresh = func() {
+		if v.mirrorPane != nil {
+			v.mirrorPane.TriggerRefresh()
+		}
+	}
+
+	v.termBox.Refresh()
+	v.content.Refresh()
+
+	// 焦点保持在主 pane
+	v.FocusTerminal()
+}
+
+// ClosePane 关闭镜像 pane，恢复单 pane 布局。
+// 若未拆分则不做任何事。
+func (v *TerminalView) ClosePane() {
+	if !v.hasSplit {
+		return
+	}
+	v.resetSplitState()
+
+	v.termBox.RemoveAll()
+	if tw := v.tab.TermWidget(); tw != nil {
+		v.termBox.Add(tw)
+	} else {
+		v.termBox.Add(widget.NewLabel("（无终端组件）"))
+	}
+	v.termBox.Refresh()
+	v.content.Refresh()
+	v.FocusTerminal()
+}
+
+// resetSplitState 清除拆分相关状态：丢弃镜像 pane 引用并解除 tab 的刷新回调。
+func (v *TerminalView) resetSplitState() {
+	if v.tab != nil {
+		v.tab.OnTerminalRefresh = nil
+	}
+	v.mirrorPane = nil
+	v.hasSplit = false
 }
 
 // 确保 TerminalView 实现了 fyne.Widget 接口（编译期检查）

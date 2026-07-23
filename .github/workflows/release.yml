@@ -15,8 +15,35 @@ permissions:
   contents: write
 
 jobs:
+  # ───────────────────────── Test ─────────────────────────
+  # 先运行全量测试（含 -race 竞态检测），构建作业通过 needs 依赖本作业，
+  # 测试失败则阻止构建产物发布。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Fyne dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libx11-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+            libxi-dev libxxf86vm-dev libasound2-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            pkg-config
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
   # ───────────────────────── Linux ─────────────────────────
   build-linux:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +93,7 @@ jobs:
 
   # ───────────────────────── macOS ─────────────────────────
   build-macos:
+    needs: test
     runs-on: macos-latest
     strategy:
       matrix:
@@ -107,6 +135,7 @@ jobs:
 
   # ───────────────────────── Windows ─────────────────────────
   build-windows:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

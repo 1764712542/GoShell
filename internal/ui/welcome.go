@@ -215,7 +215,7 @@ func (w *WelcomePage) buildSessionList() *widget.List {
 		// 模板
 		func() fyne.CanvasObject {
 			// ---- 标题行：▶/▼ + 分组名 + 会话数 ----
-			arrow := canvas.NewText("▼", color.RGBA{R: 0x89, G: 0xb4, B: 0xfa, A: 0xff})
+			arrow := canvas.NewText("▼", color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0xff})
 			arrow.TextSize = 14
 			arrow.TextStyle = fyne.TextStyle{Bold: true}
 			groupLabel := widget.NewLabel("分组名")
@@ -225,7 +225,7 @@ func (w *WelcomePage) buildSessionList() *widget.List {
 			headerRow := container.NewHBox(arrow, groupLabel, countLabel)
 
 			// ---- 会话行：[图标] [名称] [user@host:port] ←留白→ [编辑][删除][...] ----
-			icon := canvas.NewText("▶", color.RGBA{R: 0x89, G: 0xb4, B: 0xfa, A: 0xff})
+			icon := canvas.NewText("▶", color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0xff})
 			icon.TextSize = 16
 			nameLabel := widget.NewLabel("会话名称")
 			nameLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -464,12 +464,12 @@ func (w *WelcomePage) RefreshSessions() {
 // CreateRenderer 实现 fyne.Widget 接口
 func (w *WelcomePage) CreateRenderer() fyne.WidgetRenderer {
 	// 标题
-	title := canvas.NewText("GoShell", color.RGBA{R: 0x89, G: 0xb4, B: 0xfa, A: 0xff})
+	title := canvas.NewText("GoShell", color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0xff})
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.TextSize = 28
 	title.Alignment = fyne.TextAlignCenter
 
-	subtitle := canvas.NewText("轻量级 SSH / 串口 / Telnet 终端客户端", color.RGBA{R: 0xa6, G: 0xac, B: 0xba, A: 0xff})
+	subtitle := canvas.NewText("轻量级 SSH / 串口 / Telnet 终端客户端", color.RGBA{R: 0x8e, G: 0x8e, B: 0x93, A: 0xff})
 	subtitle.TextSize = 14
 	subtitle.Alignment = fyne.TextAlignCenter
 
@@ -504,7 +504,7 @@ func (w *WelcomePage) CreateRenderer() fyne.WidgetRenderer {
 	if hasSessions {
 		listArea = w.sessionList
 	} else {
-		emptyHint := widget.NewLabel("暂无会话，点击「新建会话」添加第一台服务器")
+		emptyHint := widget.NewLabel("暂无会话，点击「新建会话」添加第一台服务器，或点击「本地终端」快速开始")
 		emptyHint.Alignment = fyne.TextAlignCenter
 		listArea = container.NewCenter(emptyHint)
 	}

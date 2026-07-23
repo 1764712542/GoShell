@@ -5,7 +5,9 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/widget"
 	"github.com/hinshun/vt10x"
+	"github.com/mattn/go-runewidth"
 )
 
 // attrReverse 与 vt10x 内部的反色属性位一致（见 state.go）。
@@ -20,15 +22,15 @@ var (
 )
 
 // terminalRenderer 是 TerminalWidget 的渲染器。
-// 每个 cell 由一个 canvas.Rectangle（背景）和一个 canvas.Text（前景字符）组成。
-// 光标也使用一个 canvas.Rectangle，叠在最上层。
+// 使用 Fyne 的 widget.TextGrid 按行渲染终端 cell，相比 per-cell
+// canvas.Text 大幅减少 CanvasObject 数量（从 3840 降到 2-3 个）。
+// 光标使用一个 canvas.Rectangle 叠在 textGrid 上层。
 type terminalRenderer struct {
 	widget    *TerminalWidget
 	bg        *canvas.Rectangle   // 整体背景
 	cursor    *canvas.Rectangle   // 光标
-	cellBGs   []*canvas.Rectangle // 每个 cell 的背景矩形
-	cells     []*canvas.Text      // 每个 cell 的字符（与 cellBGs 一一对应）
-	objects   []fyne.CanvasObject // 所有需要绘制的对象
+	textGrid  *widget.TextGrid    // 按行渲染的文本网格
+	objects   []fyne.CanvasObject // 所有需要绘制的对象（bg + textGrid + cursor）
 	cellSize  fyne.Size           // 单个字符的尺寸（缓存）
 	lastGlyph []vt10x.Glyph       // 上次绘制时的 glyph，用于脏 cell 追踪
 
@@ -40,9 +42,10 @@ type terminalRenderer struct {
 // newTerminalRenderer 构造一个 TerminalWidget 的渲染器。
 func newTerminalRenderer(w *TerminalWidget) *terminalRenderer {
 	r := &terminalRenderer{
-		widget: w,
-		bg:     canvas.NewRectangle(w.bg),
-		cursor: canvas.NewRectangle(w.fg),
+		widget:   w,
+		bg:       canvas.NewRectangle(w.bg),
+		cursor:   canvas.NewRectangle(w.fg),
+		textGrid: widget.NewTextGrid(),
 	}
 	r.cursor.Hide()
 	r.rebuildCells()
@@ -50,41 +53,52 @@ func newTerminalRenderer(w *TerminalWidget) *terminalRenderer {
 	return r
 }
 
-// rebuildCells 重新分配 cell 数组并应用默认样式。
+// rebuildCells 重新初始化 textGrid 的 Rows 并重置脏 cell 追踪。
 func (r *terminalRenderer) rebuildCells() {
 	count := r.widget.cols * r.widget.rows
 	if count < 0 {
 		count = 0
 	}
-	r.cellBGs = make([]*canvas.Rectangle, count)
-	r.cells = make([]*canvas.Text, count)
 	r.lastGlyph = make([]vt10x.Glyph, count)
-	for i := 0; i < count; i++ {
-		bg := canvas.NewRectangle(r.widget.bg)
-		bg.Hide() // 默认背景由整体 bg 负责，隐藏以减少绘制
-		r.cellBGs[i] = bg
 
-		t := canvas.NewText(" ", r.widget.fg)
-		t.TextSize = r.widget.fontSize
-		t.TextStyle = fyne.TextStyle{Monospace: true}
-		r.cells[i] = t
+	cols := r.widget.cols
+	rows := r.widget.rows
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+
+	// 初始化 textGrid 的 Rows 为空白 cell
+	r.textGrid.Rows = make([]widget.TextGridRow, rows)
+	fg := r.widget.fg
+	bg := r.widget.bg
+	textStyle := fyne.TextStyle{Monospace: true}
+	for y := 0; y < rows; y++ {
+		row := widget.TextGridRow{Cells: make([]widget.TextGridCell, cols)}
+		for x := 0; x < cols; x++ {
+			row.Cells[x] = widget.TextGridCell{
+				Rune: ' ',
+				Style: &widget.CustomTextGridStyle{
+					FGColor:   fg,
+					BGColor:   bg,
+					TextStyle: textStyle,
+				},
+			}
+		}
+		r.textGrid.Rows[y] = row
 	}
 }
 
 // refreshObjects 重建 objects 切片。
-// 顺序：整体背景 -> 每 cell (bgRect, text) -> 光标。
+// 顺序：整体背景 -> textGrid -> 光标。
 // 绘制层级从底到顶。
 func (r *terminalRenderer) refreshObjects() {
 	r.objects = r.objects[:0]
 	r.objects = append(r.objects, r.bg)
-	for i := range r.cells {
-		r.objects = append(r.objects, r.cellBGs[i])
-		r.objects = append(r.objects, r.cells[i])
-	}
+	r.objects = append(r.objects, r.textGrid)
 	r.objects = append(r.objects, r.cursor)
 }
 
-// Layout 计算字符尺寸并布局所有 cell。
+// Layout 计算字符尺寸并布局 textGrid 与光标。
 func (r *terminalRenderer) Layout(size fyne.Size) {
 	r.bg.Resize(size)
 	r.bg.Move(fyne.NewPos(0, 0))
@@ -101,19 +115,9 @@ func (r *terminalRenderer) Layout(size fyne.Size) {
 	r.widget.charWidth = charW
 	r.widget.charHeight = charH
 
-	for y := 0; y < rows; y++ {
-		for x := 0; x < cols; x++ {
-			idx := y*cols + x
-			if idx >= len(r.cells) {
-				break
-			}
-			pos := fyne.NewPos(float32(x)*charW, float32(y)*charH)
-			r.cellBGs[idx].Resize(r.cellSize)
-			r.cellBGs[idx].Move(pos)
-			r.cells[idx].Resize(r.cellSize)
-			r.cells[idx].Move(pos)
-		}
-	}
+	// textGrid 填满整个区域
+	r.textGrid.Resize(size)
+	r.textGrid.Move(fyne.NewPos(0, 0))
 
 	r.cursor.Resize(r.cellSize)
 }
@@ -140,7 +144,8 @@ func (r *terminalRenderer) Objects() []fyne.CanvasObject {
 func (r *terminalRenderer) Destroy() {}
 
 // Refresh 重绘所有 cell。
-// 通过比较 lastGlyph 与当前 glyph 实现脏 cell 追踪，只刷新变化的 cell。
+// 通过比较 lastGlyph 与当前 glyph 实现行级脏追踪，只有 glyph 变化的行
+// 才调用 SetRow。最后调用 textGrid.Refresh() 触发内部行渲染器刷新。
 // 当 scrollOffset > 0 时从回滚缓冲区渲染历史输出。
 // 当正在选择文本时，选中区域使用反色显示。
 // 当有搜索匹配时，匹配文本使用高亮背景色。
@@ -155,9 +160,8 @@ func (r *terminalRenderer) Refresh() {
 	rows := w.rows
 
 	// 尺寸变化时重建 cell 数组
-	if len(r.cells) != cols*rows {
+	if len(r.lastGlyph) != cols*rows {
 		r.rebuildCells()
-		r.refreshObjects()
 	}
 
 	// 回滚模式：从 scrollback + 屏幕渲染历史输出
@@ -199,24 +203,24 @@ func (r *terminalRenderer) Refresh() {
 		sbCount = w.scrollback.Count()
 	}
 
+	textStyle := fyne.TextStyle{Monospace: true}
+	anyDirty := false
+
 	for y := 0; y < rows; y++ {
+		rowDirty := false
+		row := widget.TextGridRow{Cells: make([]widget.TextGridCell, cols)}
+
 		for x := 0; x < cols; x++ {
 			idx := y*cols + x
-			if idx >= len(r.cells) {
-				break
-			}
 			glyph := emu.Cell(x, y)
 
-			// 脏 cell 追踪：只有 glyph 变化时才刷新
-			if idx < len(r.lastGlyph) && r.lastGlyph[idx] == glyph {
-				continue
+			// 脏 cell 追踪：检测行内是否有 glyph 变化
+			if idx < len(r.lastGlyph) && r.lastGlyph[idx] != glyph {
+				rowDirty = true
 			}
 			if idx < len(r.lastGlyph) {
 				r.lastGlyph[idx] = glyph
 			}
-
-			cell := r.cells[idx]
-			cellBG := r.cellBGs[idx]
 
 			fg, bg := r.resolveColors(glyph)
 
@@ -238,22 +242,38 @@ func (r *terminalRenderer) Refresh() {
 			if char == 0 {
 				char = ' '
 			}
-			cell.Text = string(char)
-			cell.Color = fg
-			cell.TextSize = w.fontSize
-			cell.TextStyle = fyne.TextStyle{Monospace: true}
-
-			// 非默认背景：显示 cell 级背景矩形
-			if !colorsEqual(bg, w.bg) {
-				cellBG.FillColor = bg
-				cellBG.Show()
-			} else {
-				cellBG.Hide()
+			// Unicode 宽字符支持：根据 runewidth 处理不同宽度的字符，
+			// 避免 CJK/emoji/组合标记导致的显示错位。
+			switch runewidth.RuneWidth(char) {
+			case 0:
+				// 零宽字符（组合标记、零宽空格等）：渲染为空格，
+				// 避免占用 cell 宽度导致后续字符错位。
+				char = ' '
+			case 2:
+				// 宽字符（CJK 全角、emoji）：在当前 cell 渲染原字符。
+				// Fyne TextGrid 等宽布局无法让单 cell 占 2 倍宽度，
+				// 但保持原字符可避免丢弃后续 cell 内容。
 			}
-
-			canvas.Refresh(cellBG)
-			canvas.Refresh(cell)
+			row.Cells[x] = widget.TextGridCell{
+				Rune: char,
+				Style: &widget.CustomTextGridStyle{
+					FGColor:   fg,
+					BGColor:   bg,
+					TextStyle: textStyle,
+				},
+			}
 		}
+
+		// 只有行级别有变化时才调用 SetRow
+		if rowDirty {
+			r.textGrid.SetRow(y, row)
+			anyDirty = true
+		}
+	}
+
+	// 触发 textGrid 内部行渲染器刷新
+	if anyDirty {
+		r.textGrid.Refresh()
 	}
 
 	// 光标
@@ -270,18 +290,19 @@ func (r *terminalRenderer) Refresh() {
 
 // renderScrollbackMode 从回滚缓冲区渲染历史输出。
 // 视图由 scrollback 行 + 当前屏幕行组成，根据 scrollOffset 定位视口。
-// 回滚区行以纯文本渲染（默认前景/背景色），屏幕行同样以纯文本渲染。
+// 回滚区和屏幕区均使用属性化 cell 渲染（保留颜色/样式），通过
+// glyphColor 将 vt10x.Color 解析为 color.Color，与实时模式一致。
 func (r *terminalRenderer) renderScrollbackMode(cols, rows int) {
 	w := r.widget
 
-	// 获取回滚缓冲区行
+	// 获取回滚缓冲区行（属性化）
 	sbLines := w.scrollback.Lines()
 	sbCount := len(sbLines)
 
-	// 获取当前屏幕行
-	var screenLines []string
+	// 获取当前屏幕行（属性化）
+	var screenLines []ScrollbackLine
 	if w.emulator != nil {
-		screenLines = CaptureScreen(w.emulator.term, cols, rows)
+		screenLines = CaptureScreenCells(w.emulator.term, cols, rows)
 	}
 
 	totalLines := sbCount + len(screenLines)
@@ -296,39 +317,58 @@ func (r *terminalRenderer) renderScrollbackMode(cols, rows int) {
 	r.cursor.Hide()
 	canvas.Refresh(r.cursor)
 
+	// 默认前景/背景色，用于 DefaultFG/DefaultBG 的解析
+	defaultFG := w.fg
+	defaultBG := w.bg
+	textStyle := fyne.TextStyle{Monospace: true}
+
 	for y := 0; y < rows; y++ {
 		absLine := startLine + y
 
-		var line string
+		var line ScrollbackLine
+		hasLine := false
 		if absLine < totalLines {
 			if absLine < sbCount {
 				line = sbLines[absLine]
+				hasLine = true
 			} else {
 				screenIdx := absLine - sbCount
 				if screenIdx < len(screenLines) {
 					line = screenLines[screenIdx]
+					hasLine = true
 				}
 			}
 		}
 
-		lineRunes := []rune(line)
-
+		row := widget.TextGridRow{Cells: make([]widget.TextGridCell, cols)}
 		for x := 0; x < cols; x++ {
-			idx := y*cols + x
-			if idx >= len(r.cells) {
-				break
+			// 默认空白 cell
+			cell := ScrollbackCell{
+				Char: ' ',
+				FG:   vt10x.DefaultFG,
+				BG:   vt10x.DefaultBG,
+			}
+			if hasLine && x < len(line.Cells) {
+				cell = line.Cells[x]
 			}
 
-			char := ' '
-			if x < len(lineRunes) {
-				ch := lineRunes[x]
-				if ch != 0 {
-					char = ch
-				}
+			char := cell.Char
+			if char == 0 {
+				char = ' '
+			}
+			// Unicode 宽字符支持（与 Refresh 一致）
+			switch runewidth.RuneWidth(char) {
+			case 0:
+				char = ' '
+			case 2:
+				// 宽字符保持原样渲染
 			}
 
-			fg := w.fg
-			bg := w.bg
+			fg := r.glyphColor(cell.FG, defaultFG)
+			bg := r.glyphColor(cell.BG, defaultBG)
+			if cell.Mode&attrReverse != 0 {
+				fg, bg = bg, fg
+			}
 
 			// 文本选择：选中区域使用反色
 			if r.isCellSelected(x, y) {
@@ -343,25 +383,21 @@ func (r *terminalRenderer) renderScrollbackMode(cols, rows int) {
 				}
 			}
 
-			cell := r.cells[idx]
-			cellBG := r.cellBGs[idx]
-
-			cell.Text = string(char)
-			cell.Color = fg
-			cell.TextSize = w.fontSize
-			cell.TextStyle = fyne.TextStyle{Monospace: true}
-
-			if !colorsEqual(bg, w.bg) {
-				cellBG.FillColor = bg
-				cellBG.Show()
-			} else {
-				cellBG.Hide()
+			row.Cells[x] = widget.TextGridCell{
+				Rune: char,
+				Style: &widget.CustomTextGridStyle{
+					FGColor:   fg,
+					BGColor:   bg,
+					TextStyle: textStyle,
+				},
 			}
-
-			canvas.Refresh(cellBG)
-			canvas.Refresh(cell)
 		}
+
+		// 回滚模式下视口可能随 scrollOffset 变化，所有可见行都需要更新
+		r.textGrid.SetRow(y, row)
 	}
+
+	r.textGrid.Refresh()
 }
 
 // isCellSelected 判断 cell (x, y) 是否在当前文本选择区域内。

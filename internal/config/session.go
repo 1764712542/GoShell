@@ -58,6 +58,7 @@ type Session struct {
 	Tunnels       []TunnelConfig  `json:"tunnels,omitempty"`
 	QuickCommands []string        `json:"quick_commands,omitempty"`
 	TermType      string          `json:"term_type,omitempty"` // xterm-256color
+	AgentForwarding bool            `json:"agent_forwarding,omitempty"` // SSH Agent Forwarding
 	FontSize      float32         `json:"font_size,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`

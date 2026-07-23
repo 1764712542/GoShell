@@ -2,8 +2,11 @@ package ssh
 
 import (
 	"fmt"
+	"net"
+	"os"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/zhuyao/meatshell/internal/config"
 	"github.com/zhuyao/meatshell/internal/log"
@@ -54,6 +57,19 @@ func (w *Worker) authMethods() ([]ssh.AuthMethod, error) {
 			}
 		}
 		methods = append(methods, ssh.KeyboardInteractive(w.interactiveCB))
+	}
+
+	// 尝试添加 ssh-agent 认证（如果系统有 SSH_AUTH_SOCK 环境变量）
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		if conn, err := net.Dial("unix", sock); err == nil {
+			sshAgent := agent.NewClient(conn)
+			signers, err := sshAgent.Signers()
+			if err == nil && len(signers) > 0 {
+				methods = append(methods, ssh.PublicKeysCallback(sshAgent.Signers))
+			} else {
+				conn.Close()
+			}
+		}
 	}
 
 	if len(methods) == 0 {

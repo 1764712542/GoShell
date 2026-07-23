@@ -207,17 +207,37 @@ func (w *Worker) IsConnected() bool {
 	return w.connected
 }
 
+
+// Resize 调整终端窗口大小。
+// Telnet 协议不支持窗口大小变更，此方法无操作。
+func (w *Worker) Resize(cols, rows int) error {
+	// no-op: Telnet protocol does not support window resize
+	return nil
+}
+
+// SessionID 返回会话 ID
+func (w *Worker) SessionID() string {
+	return w.tabID
+}
+
 // sendStatus 发送连接状态事件到 UI（非阻塞）
+// sendStatus 发送连接状态事件到 UI（阻塞 + 超时，确保关键状态事件不被丢弃）
 func (w *Worker) sendStatus(status event.ConnectionStatus, msg string) {
-	select {
-	case w.uiChan <- event.UIEvent{
+	evt := event.UIEvent{
 		TabID:     w.tabID,
 		Type:      event.EventStatus,
 		Status:    status,
 		StatusMsg: msg,
-	}:
-	default:
-		// UI 通道已满，丢弃事件以避免阻塞
+	}
+	var done <-chan struct{}
+	if w.ctx != nil {
+		done = w.ctx.Done()
+	}
+	select {
+	case w.uiChan <- evt:
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Warn("sendStatus timed out, UI may be unresponsive", "status", status, "msg", msg)
 	}
 }
 

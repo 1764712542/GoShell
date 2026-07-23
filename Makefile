@@ -5,7 +5,7 @@ VERSION := 0.1.0
 
 # 默认构建（当前平台）
 .PHONY: build run clean package-all package-mac package-windows package-linux \
-        release test vet tidy
+        release test test-coverage vet tidy
 
 build:
 	go build -o $(APP_NAME) $(MAIN)
@@ -50,8 +50,16 @@ release:
 	@echo "Running GoReleaser..."
 	goreleaser --rm-dist
 
+# test 运行全部测试并启用竞态检测器（-race）。
+# -count=1 禁用测试结果缓存，确保每次都真正执行。
 test:
-	go test ./...
+	go test -race -count=1 ./...
+
+# test-coverage 生成带竞态检测的覆盖率报告（HTML + 文本摘要）。
+test-coverage:
+	go test -race -count=1 -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+	go tool cover -html=coverage.out -o coverage.html
 
 vet:
 	go vet ./...

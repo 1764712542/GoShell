@@ -16,6 +16,7 @@ import (
 type SettingsDialog struct {
 	win   fyne.Window
 	pref  fyne.Preferences
+	prefs *config.PreferencesManager
 	store *config.Store
 
 	// 通用标签页控件
@@ -74,23 +75,35 @@ const (
 // knownHostsPolicies 列出已知主机策略选项
 var knownHostsPolicies = []string{"auto-accept", "strict", "ask"}
 
-// shortcutBindings 列出快捷键绑定（只读展示）
-var shortcutBindings = [][2]string{
-	{"Ctrl+N", "新建会话"},
-	{"Ctrl+W", "关闭标签页"},
-	{"Ctrl+T", "切换主题"},
-	{"Ctrl+Shift+B", "同步输入模式"},
-	{"Ctrl+Shift+L", "终端日志"},
-	{"Ctrl+Shift+F", "搜索"},
-	{"Ctrl+Shift+C", "复制"},
-	{"Ctrl+Shift+V", "粘贴"},
+// shortcutActionOrder 定义快捷键在设置界面的展示顺序
+var shortcutActionOrder = []string{
+	"newTab", "closeTab", "nextTab", "prevTab",
+	"copy", "paste", "search", "settings",
+	"toggleSFTP", "fontSizeUp", "fontSizeDown", "fontSizeReset",
+}
+
+// shortcutActionLabels 将快捷键动作映射为可读标签
+var shortcutActionLabels = map[string]string{
+	"newTab":        "新建标签页",
+	"closeTab":      "关闭标签页",
+	"nextTab":       "下一个标签页",
+	"prevTab":       "上一个标签页",
+	"copy":          "复制",
+	"paste":         "粘贴",
+	"search":        "搜索",
+	"settings":      "设置",
+	"toggleSFTP":    "切换 SFTP",
+	"fontSizeUp":    "放大字号",
+	"fontSizeDown":  "缩小字号",
+	"fontSizeReset": "重置字号",
 }
 
 // ShowSettingsDialog 显示全局设置对话框
-func ShowSettingsDialog(win fyne.Window, store *config.Store) {
+func ShowSettingsDialog(win fyne.Window, store *config.Store, prefs *config.PreferencesManager) {
 	d := &SettingsDialog{
 		win:   win,
 		pref:  fyne.CurrentApp().Preferences(),
+		prefs: prefs,
 		store: store,
 	}
 
@@ -112,7 +125,11 @@ func ShowSettingsDialog(win fyne.Window, store *config.Store) {
 
 // buildGeneralTab 构建通用设置标签页
 func (d *SettingsDialog) buildGeneralTab() fyne.CanvasObject {
-	fontSize := d.pref.FloatWithFallback(prefFontSize, defaultFontSize)
+	cur := d.prefs.Get()
+	fontSize := float64(cur.Font.Size)
+	if fontSize <= 0 {
+		fontSize = defaultFontSize
+	}
 	d.generalFontSize = widget.NewSlider(10, 24)
 	d.generalFontSize.Value = fontSize
 	fontSizeLabel := widget.NewLabel(fmt.Sprintf("%.0f", fontSize))
@@ -130,7 +147,7 @@ func (d *SettingsDialog) buildGeneralTab() fyne.CanvasObject {
 	for i, s := range schemes {
 		schemeNames[i] = s.Name
 	}
-	currentScheme := d.pref.String(prefColorScheme)
+	currentScheme := cur.Theme.Name
 	if currentScheme == "" {
 		if def := DefaultColorScheme(); def != nil {
 			currentScheme = def.Name
@@ -139,8 +156,12 @@ func (d *SettingsDialog) buildGeneralTab() fyne.CanvasObject {
 	d.generalScheme = widget.NewSelect(schemeNames, nil)
 	d.generalScheme.SetSelected(currentScheme)
 
+	scrollback := cur.Terminal.ScrollbackLines
+	if scrollback <= 0 {
+		scrollback = defaultScrollbackSize
+	}
 	d.generalScrollback = widget.NewEntry()
-	d.generalScrollback.SetText(strconv.Itoa(d.pref.IntWithFallback(prefScrollbackSize, defaultScrollbackSize)))
+	d.generalScrollback.SetText(strconv.Itoa(scrollback))
 
 	form := &widget.Form{
 		Items: []*widget.FormItem{
@@ -220,21 +241,30 @@ func (d *SettingsDialog) buildProxyTab() fyne.CanvasObject {
 
 // buildShortcutsTab 构建快捷键标签页（只读表格）
 func (d *SettingsDialog) buildShortcutsTab() fyne.CanvasObject {
+	cur := d.prefs.Get()
+	bindings := make([][2]string, 0, len(shortcutActionOrder))
+	for _, action := range shortcutActionOrder {
+		key, ok := cur.Shortcuts[action]
+		if !ok {
+			continue
+		}
+		bindings = append(bindings, [2]string{key, shortcutActionLabels[action]})
+	}
 	table := widget.NewTable(
-		func() (int, int) { return len(shortcutBindings), 2 },
+		func() (int, int) { return len(bindings), 2 },
 		func() fyne.CanvasObject { return widget.NewLabel("") },
 		func(id widget.TableCellID, obj fyne.CanvasObject) {
 			label := obj.(*widget.Label)
-			if id.Row < 0 || id.Row >= len(shortcutBindings) {
+			if id.Row < 0 || id.Row >= len(bindings) {
 				label.SetText("")
 				return
 			}
 			switch id.Col {
 			case 0:
-				label.SetText(shortcutBindings[id.Row][0])
+				label.SetText(bindings[id.Row][0])
 				label.TextStyle = fyne.TextStyle{Monospace: true}
 			case 1:
-				label.SetText(shortcutBindings[id.Row][1])
+				label.SetText(bindings[id.Row][1])
 			}
 		},
 	)
@@ -280,16 +310,24 @@ func (d *SettingsDialog) buildSecurityTab() fyne.CanvasObject {
 
 // save 保存所有设置到 Preferences
 func (d *SettingsDialog) save() {
-	d.pref.SetFloat(prefFontSize, d.generalFontSize.Value)
+	// 写入声明式 YAML 配置（config.yaml）
+	p := *d.prefs.Get()
+	p.Font.Size = float32(d.generalFontSize.Value)
+	if sb, err := strconv.Atoi(d.generalScrollback.Text); err == nil {
+		p.Terminal.ScrollbackLines = sb
+	}
+	p.Theme.Name = d.generalScheme.Selected
+	if err := p.Save(); err != nil {
+		dialog.ShowError(fmt.Errorf("保存配置失败: %w", err), d.win)
+	}
+	d.prefs.Update(&p)
+
+	// 其余设置仍写入 fyne Preferences（尚未迁移到 YAML 的项）
 	if cols, err := strconv.Atoi(d.generalCols.Text); err == nil {
 		d.pref.SetInt(prefTerminalCols, cols)
 	}
 	if rows, err := strconv.Atoi(d.generalRows.Text); err == nil {
 		d.pref.SetInt(prefTerminalRows, rows)
-	}
-	d.pref.SetString(prefColorScheme, d.generalScheme.Selected)
-	if sb, err := strconv.Atoi(d.generalScrollback.Text); err == nil {
-		d.pref.SetInt(prefScrollbackSize, sb)
 	}
 
 	d.pref.SetInt(prefKeepaliveInterval, int(d.sshKeepalive.Value))

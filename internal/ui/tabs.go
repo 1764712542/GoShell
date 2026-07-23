@@ -14,17 +14,17 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// 标签栏颜色
+// 标签栏颜色（macOS 暗色模式调色板）
 var (
-	colorActive    = color.RGBA{R: 0x89, G: 0xb4, B: 0xfa, A: 0x3f}
-	colorInactive  = color.RGBA{R: 0x31, G: 0x31, B: 0x44, A: 0xff}
-	colorUnderline = color.RGBA{R: 0x89, G: 0xb4, B: 0xfa, A: 0xff}
-	colorTabHover  = color.RGBA{R: 0x45, G: 0x47, B: 0x5a, A: 0x80}
+	colorActive    = color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0x33} // macOS 蓝低透明度
+	colorInactive  = color.RGBA{R: 0x24, G: 0x24, B: 0x34, A: 0xff}
+	colorUnderline = color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0xff} // macOS 蓝
+	colorTabHover  = color.RGBA{R: 0x35, G: 0x35, B: 0x45, A: 0x80}
 	colorToolbarBg = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xff}
 	// 通用状态颜色
-	colorGreen = color.RGBA{R: 0xa6, G: 0xe3, B: 0xa1, A: 0xff}
-	colorRed   = color.RGBA{R: 0xed, G: 0x87, B: 0x96, A: 0xff}
-	colorGray  = color.RGBA{R: 0xa6, G: 0xac, B: 0xba, A: 0xff}
+	colorGreen = color.RGBA{R: 0x30, G: 0xd1, B: 0x58, A: 0xff} // macOS 绿
+	colorRed   = color.RGBA{R: 0xff, G: 0x45, B: 0x3a, A: 0xff} // macOS 红
+	colorGray  = color.RGBA{R: 0x8e, G: 0x8e, B: 0x93, A: 0xff}
 )
 
 // 标签颜色标记预设（用于快速颜色选择）
@@ -510,7 +510,7 @@ func (b *tabButton) CreateRenderer() fyne.WidgetRenderer {
 	var content fyne.CanvasObject
 	if b.item.Closable {
 		// 用小号 ✕ 文本作为关闭按钮，避免标准 Button 的 padding 过大
-		closeIcon := canvas.NewText("✕", color.RGBA{R: 0xa6, G: 0xac, B: 0xba, A: 0xff})
+		closeIcon := canvas.NewText("✕", colorGray)
 		closeIcon.TextSize = 12
 		closeIcon.Hide()
 		b.closeBtn = nil // 不再使用 widget.Button
@@ -547,6 +547,7 @@ func (b *tabButton) CreateRenderer() fyne.WidgetRenderer {
 	}
 
 	bg := canvas.NewRectangle(colorInactive)
+	bg.CornerRadius = 6 // macOS 风格圆角
 
 	// active 标签的底部强调线
 	underline := canvas.NewRectangle(colorUnderline)

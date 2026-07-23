@@ -25,3 +25,7 @@ bin/
 .DS_Store
 Thumbs.db
 gen_icon.go
+
+# Test coverage artifacts
+coverage.out
+coverage.html

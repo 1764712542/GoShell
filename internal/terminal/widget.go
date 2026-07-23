@@ -97,6 +97,10 @@ func NewTerminalWidget(emu *Emulator, inputCB func([]byte)) *TerminalWidget {
 		hyperlinks: NewHyperlinkManager(),
 		scrollback: NewScrollback(10000),
 	}
+	// 将 scrollback 注入 emulator，使其在 Write 中能捕获滚出的行。
+	// 这是修复"正常滚动时 scrollback 从不填充"bug 的关键链接：
+	// emulator 的 Write 方法会对比写入前后屏幕内容，把滚出顶部的行压入 scrollback。
+	emu.SetScrollback(t.scrollback)
 	t.ExtendBaseWidget(t)
 	return t
 }
@@ -383,7 +387,9 @@ func (t *TerminalWidget) MouseOut() {
 // Tapped 实现 fyne.Tappable 接口。
 // 当鼠标跟踪启用时，将点击事件作为鼠标按钮事件发送；
 // 否则检查点击位置是否落在 OSC 8 超链接上，若是则打开 URL。
+// 无论哪种模式，都先获取焦点以确保键盘输入能到达终端。
 func (t *TerminalWidget) Tapped(evt *fyne.PointEvent) {
+	t.requestFocus()
 	if t.MouseTracking() {
 		// 鼠标跟踪模式下，点击事件由 MouseDown/MouseUp 处理
 		return
@@ -426,7 +432,10 @@ func (t *TerminalWidget) Scrolled(evt *fyne.ScrollEvent) {
 // MouseDown 实现 desktop.Mouseable 接口。
 // 当鼠标跟踪启用时，将鼠标按下事件编码为 SGR 鼠标序列发送。
 // 否则在左键按下时开始文本选择。
+// 无论哪种模式，都先获取焦点以确保键盘输入能到达终端
+// （修复打开 SFTP 面板后点击终端无法输入的问题）。
 func (t *TerminalWidget) MouseDown(evt *desktop.MouseEvent) {
+	t.requestFocus()
 	if t.MouseTracking() {
 		t.currentMouseButton = evt.Button
 		t.handleMouseEvent(evt, false)
@@ -437,6 +446,16 @@ func (t *TerminalWidget) MouseDown(evt *desktop.MouseEvent) {
 		t.selecting = true
 		t.selectStart = evt.Position
 		t.selectEnd = evt.Position
+	}
+}
+
+// requestFocus 请求当前 canvas 将焦点设置到本 widget。
+// 在 MouseDown 和 Tapped 中调用，确保用户点击终端后键盘输入能到达终端。
+// 这对修复"打开 SFTP 等面板后点击终端无法输入"的问题至关重要。
+func (t *TerminalWidget) requestFocus() {
+	c := fyne.CurrentApp().Driver().CanvasForObject(t)
+	if c != nil {
+		c.Focus(t)
 	}
 }
 
@@ -630,13 +649,14 @@ func (t *TerminalWidget) ResetScrollOffset() {
 	}
 }
 
-// CaptureScreenToScrollback 捕获当前可见屏幕并压入回滚缓冲区。
+// CaptureScreenToScrollback 捕获当前可见屏幕（含完整属性）并压入回滚缓冲区。
 // 通常在终端 resize 或清屏前调用，以保留历史输出。
+// 使用 CaptureScreenCells 而非 CaptureScreen，以保留每个 cell 的颜色和样式。
 func (t *TerminalWidget) CaptureScreenToScrollback() {
 	if t.emulator == nil || t.scrollback == nil {
 		return
 	}
-	lines := CaptureScreen(t.emulator.term, t.cols, t.rows)
+	lines := CaptureScreenCells(t.emulator.term, t.cols, t.rows)
 	for _, line := range lines {
 		t.scrollback.PushLine(line)
 	}
@@ -734,10 +754,12 @@ func (t *TerminalWidget) findAllMatches(query string) []searchMatch {
 		return nil
 	}
 	var matches []searchMatch
-	// 收集回滚缓冲区行
+	// 收集回滚缓冲区行（ScrollbackLine -> 纯文本）
 	var allLines []string
 	if t.scrollback != nil {
-		allLines = append(allLines, t.scrollback.Lines()...)
+		for _, line := range t.scrollback.Lines() {
+			allLines = append(allLines, line.String())
+		}
 	}
 	// 收集当前屏幕行
 	if t.emulator != nil {

@@ -88,7 +88,8 @@ func (s *Store) Load() error {
 	return nil
 }
 
-// Save 将会话持久化到磁盘，自动加密敏感字段
+// Save 将会话持久化到磁盘，自动加密敏感字段。
+// 修复审计严重问题 #5：加密失败必须返回 error，禁止静默写明文到磁盘。
 func (s *Store) Save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -97,19 +98,34 @@ func (s *Store) Save() error {
 	var rawSessions []*Session
 	for _, sess := range s.sessions {
 		clone := *sess
-		if enc, err := Encrypt(clone.Password); err == nil {
+		// 加密敏感字段，任一失败立即返回 error，绝不写明文到磁盘
+		if clone.Password != "" {
+			enc, err := Encrypt(clone.Password)
+			if err != nil {
+				return fmt.Errorf("encrypt password for session %s: %w", clone.ID, err)
+			}
 			clone.Password = enc
 		}
-		if enc, err := Encrypt(clone.PrivateKey); err == nil {
+		if clone.PrivateKey != "" {
+			enc, err := Encrypt(clone.PrivateKey)
+			if err != nil {
+				return fmt.Errorf("encrypt private key for session %s: %w", clone.ID, err)
+			}
 			clone.PrivateKey = enc
 		}
-		if enc, err := Encrypt(clone.Passphrase); err == nil {
+		if clone.Passphrase != "" {
+			enc, err := Encrypt(clone.Passphrase)
+			if err != nil {
+				return fmt.Errorf("encrypt passphrase for session %s: %w", clone.ID, err)
+			}
 			clone.Passphrase = enc
 		}
 		if clone.Proxy != nil && clone.Proxy.Password != "" {
-			if enc, err := Encrypt(clone.Proxy.Password); err == nil {
-				clone.Proxy.Password = enc
+			enc, err := Encrypt(clone.Proxy.Password)
+			if err != nil {
+				return fmt.Errorf("encrypt proxy password for session %s: %w", clone.ID, err)
 			}
+			clone.Proxy.Password = enc
 		}
 		rawSessions = append(rawSessions, &clone)
 	}

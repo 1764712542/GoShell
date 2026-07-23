@@ -3,8 +3,10 @@ package ftp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/zhuyao/meatshell/internal/event"
+	"github.com/zhuyao/meatshell/internal/log"
 )
 
 // Worker 管理 FTP 连接的生命周期。
@@ -18,6 +20,7 @@ type Worker struct {
 	uiChan   chan event.UIEvent
 	tabID    string
 	client   *Client
+	ctx      context.Context
 	closed   bool
 }
 
@@ -35,6 +38,7 @@ func NewWorker(host string, port int, username, password string, uiChan chan eve
 
 // Connect 建立 FTP 连接，并通过 uiChan 推送连接状态事件。
 func (w *Worker) Connect(ctx context.Context) error {
+	w.ctx = ctx
 	// 检查上下文是否已取消
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("connect cancelled: %w", err)
@@ -84,16 +88,33 @@ func (w *Worker) Resize(cols, rows int) error {
 	return nil
 }
 
-// sendStatus 发送连接状态事件（非阻塞）。
+
+// IsConnected 返回当前是否已连接
+func (w *Worker) IsConnected() bool {
+	return w.client != nil && !w.closed
+}
+
+// SessionID 返回会话 ID
+func (w *Worker) SessionID() string {
+	return w.tabID
+}
+
+// sendStatus 发送连接状态事件到 UI（阻塞 + 超时，确保关键状态事件不被丢弃）
 func (w *Worker) sendStatus(status event.ConnectionStatus, msg string) {
-	select {
-	case w.uiChan <- event.UIEvent{
+	evt := event.UIEvent{
 		TabID:     w.tabID,
 		Type:      event.EventStatus,
 		Status:    status,
 		StatusMsg: msg,
-	}:
-	default:
-		// 通道已满，丢弃事件以避免阻塞
+	}
+	var done <-chan struct{}
+	if w.ctx != nil {
+		done = w.ctx.Done()
+	}
+	select {
+	case w.uiChan <- evt:
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Warn("sendStatus timed out, UI may be unresponsive", "status", status, "msg", msg)
 	}
 }

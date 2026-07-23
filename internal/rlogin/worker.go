@@ -260,16 +260,36 @@ func (w *Worker) Close() {
 	log.Info("rlogin worker closed", "host", w.host)
 }
 
+
+// IsConnected 返回当前是否已连接
+func (w *Worker) IsConnected() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.conn != nil && !w.closed
+}
+
+// SessionID 返回会话 ID
+func (w *Worker) SessionID() string {
+	return w.tabID
+}
+
 // sendStatus 发送连接状态事件到 UI（非阻塞）
+// sendStatus 发送连接状态事件到 UI（阻塞 + 超时，确保关键状态事件不被丢弃）
 func (w *Worker) sendStatus(status event.ConnectionStatus, msg string) {
-	select {
-	case w.uiChan <- event.UIEvent{
+	evt := event.UIEvent{
 		TabID:     w.tabID,
 		Type:      event.EventStatus,
 		Status:    status,
 		StatusMsg: msg,
-	}:
-	default:
-		// UI 通道已满，丢弃事件以避免阻塞
+	}
+	var done <-chan struct{}
+	if w.ctx != nil {
+		done = w.ctx.Done()
+	}
+	select {
+	case w.uiChan <- evt:
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Warn("sendStatus timed out, UI may be unresponsive", "status", status, "msg", msg)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/zhuyao/meatshell/internal/config"
 	"github.com/zhuyao/meatshell/internal/event"
@@ -130,6 +131,14 @@ func (w *Worker) Connect(ctx context.Context) error {
 	w.stdin = stdin
 	w.mu.Unlock()
 
+	// 如果用户配置了 agent forwarding，请求转发
+	// 必须在 RequestPty 之前调用
+	if w.session.AgentForwarding {
+		if err := agent.RequestAgentForwarding(session); err != nil {
+			log.Warn("agent forwarding failed", "err", err)
+		}
+	}
+
 	// 请求 PTY
 	termType := w.session.TermType
 	if termType == "" {
@@ -225,12 +234,21 @@ func (w *Worker) readLoop(stdout io.Reader) {
 		}
 	}
 
-	// 等待会话完全结束
+	// 等待会话完全结束（带超时，防止网络黑洞导致永久阻塞和 goroutine 泄漏）
 	w.mu.Lock()
 	session := w.sshSession
 	w.mu.Unlock()
 	if session != nil {
-		session.Wait()
+		done := make(chan struct{})
+		go func() {
+			session.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			log.Warn("session.Wait timeout, forcing close", "host", w.session.Host)
+		}
 	}
 
 	// 取消 context 以停止 inputLoop 和其他 goroutine
@@ -524,16 +542,22 @@ func parseProxyJump(proxyJump, defaultUser string) (user, host string, port int,
 	return user, host, port, nil
 }
 
-// sendStatus 发送连接状态事件到 UI（非阻塞）
+// sendStatus 发送连接状态事件到 UI（阻塞 + 超时，确保关键状态事件不被丢弃）
 func (w *Worker) sendStatus(status event.ConnectionStatus, msg string) {
-	select {
-	case w.uiChan <- event.UIEvent{
+	evt := event.UIEvent{
 		TabID:     w.session.ID,
 		Type:      event.EventStatus,
 		Status:    status,
 		StatusMsg: msg,
-	}:
-	default:
-		// UI 通道已满，丢弃事件以避免阻塞
+	}
+	var done <-chan struct{}
+	if w.ctx != nil {
+		done = w.ctx.Done()
+	}
+	select {
+	case w.uiChan <- evt:
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Warn("sendStatus timed out, UI may be unresponsive", "status", status, "msg", msg)
 	}
 }

@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	fyne.io/fyne/v2 v2.8.0
 	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/jlaffaye/ftp v0.2.1
@@ -13,6 +14,7 @@ require (
 	go.bug.st/serial v1.8.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -23,7 +25,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fredbi/uri v1.1.1 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fyne-io/gl-js v0.2.1-0.20260315212741-029c47fd27e8 // indirect
 	github.com/fyne-io/glfw-js v0.4.0 // indirect
 	github.com/fyne-io/image v0.1.1 // indirect
@@ -57,5 +58,4 @@ require (
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

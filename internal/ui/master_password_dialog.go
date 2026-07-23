@@ -2,6 +2,8 @@ package ui
 
 import (
 	"errors"
+	"fmt"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
@@ -14,6 +16,16 @@ import (
 // 若主密码保护已启用（磁盘上存在校验令牌）且内存中尚未设置主密码，应调用此函数。
 // onSuccess 在用户成功验证主密码后回调。
 func ShowMasterPasswordDialog(win fyne.Window, onSuccess func()) {
+	// 锁定期内拒绝弹窗，显示剩余锁定时间（修复安全问题：主密码无错误次数限制）
+	if config.IsMasterPasswordLockedOut() {
+		remaining := config.MasterPasswordLockoutRemaining()
+		dialog.ShowInformation("已锁定",
+			fmt.Sprintf("主密码验证失败次数过多，已锁定。\n请 %v 后再试。", remaining.Round(time.Second)),
+			win)
+		win.Close()
+		return
+	}
+
 	passwordEntry := widget.NewPasswordEntry()
 	passwordEntry.SetPlaceHolder("请输入主密码")
 
@@ -36,7 +48,16 @@ func ShowMasterPasswordDialog(win fyne.Window, onSuccess func()) {
 			return
 		}
 		if !config.VerifyMasterPassword(pw) {
-			dialog.ShowError(errors.New("主密码不正确"), win)
+			// 达到上限，进入锁定：显示锁定消息并关闭窗口
+			if config.IsMasterPasswordLockedOut() {
+				remaining := config.MasterPasswordLockoutRemaining()
+				dialog.ShowError(fmt.Errorf("主密码验证失败次数过多，已锁定 %v", remaining.Round(time.Second)), win)
+				win.Close()
+				return
+			}
+			// 未达上限：显示剩余尝试次数
+			remaining := config.MasterPasswordRemainingAttempts()
+			dialog.ShowError(fmt.Errorf("主密码不正确，剩余尝试次数：%d", remaining), win)
 			ShowMasterPasswordDialog(win, onSuccess)
 			return
 		}

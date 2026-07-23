@@ -18,13 +18,15 @@ const localMonitorTabID = "local"
 // App 是应用主控制器，管理所有标签页、UI 事件循环和全局状态。
 // 它连接 UI 层和后端模块，不直接依赖 UI 包（通过回调机制解耦）。
 type App struct {
-	fyneApp fyne.App
-	window  fyne.Window
-	store   *config.Store
-	i18n    *i18n.Manager
-	uiChan  chan UIEvent
-	done    chan struct{} // 用于通知 eventLoop 退出
-	closed  bool          // 标记是否已关闭，防止重复关闭
+	fyneApp     fyne.App
+	window      fyne.Window
+	store       *config.Store
+	prefs       *config.PreferencesManager
+	stopWatcher func() error
+	i18n        *i18n.Manager
+	uiChan      chan UIEvent
+	done        chan struct{} // 用于通知 eventLoop 退出
+	closed      bool          // 标记是否已关闭，防止重复关闭
 
 	tabs      map[string]*Tab
 	activeTab string
@@ -35,23 +37,42 @@ type App struct {
 	syncMode bool
 
 	// UI 回调（由 UI 层设置，可为 nil）
-	OnTabCreated    func(tab *Tab)                              // 新标签页创建
-	OnTabClosed     func(tabID string)                          // 标签页关闭
-	OnTabSwitched   func(tabID string)                          // 标签页切换
-	OnMetricsUpdate func(m *MonitorData)                        // 本机监控指标更新
-	OnAllTabsClosed func()                                      // 所有标签页关闭（显示欢迎页）
-	OnSyncModeChanged func(enabled bool)                       // 同步输入模式切换
+	OnTabCreated      func(tab *Tab)       // 新标签页创建
+	OnTabClosed       func(tabID string)   // 标签页关闭
+	OnTabSwitched     func(tabID string)   // 标签页切换
+	OnMetricsUpdate   func(m *MonitorData) // 本机监控指标更新
+	OnAllTabsClosed   func()               // 所有标签页关闭（显示欢迎页）
+	OnSyncModeChanged func(enabled bool)   // 同步输入模式切换
 }
 
 // New 创建应用控制器
 func New(fyneApp fyne.App, store *config.Store, i18nMgr *i18n.Manager) *App {
-	return &App{
+	a := &App{
 		fyneApp: fyneApp,
 		store:   store,
 		i18n:    i18nMgr,
 		uiChan:  make(chan UIEvent, 2048),
 		done:    make(chan struct{}),
 		tabs:    make(map[string]*Tab),
+	}
+	a.initPreferences()
+	return a
+}
+
+// initPreferences 创建配置管理器并启动 config.yaml 热重载。
+// 加载失败时回退到默认配置，确保 prefs 永远非 nil。
+func (a *App) initPreferences() {
+	prefs, err := config.NewPreferencesManager()
+	if err != nil {
+		log.Warn("failed to load preferences, using defaults", "err", err)
+		prefs = &config.PreferencesManager{}
+		prefs.Update(config.DefaultPreferences())
+	}
+	a.prefs = prefs
+	if stop, err := prefs.WatchConfigFile(); err != nil {
+		log.Warn("failed to start config file watcher", "err", err)
+	} else {
+		a.stopWatcher = stop
 	}
 }
 
@@ -66,6 +87,9 @@ func (a *App) SetWindow(w fyne.Window) { a.window = w }
 
 // Store 返回配置存储
 func (a *App) Store() *config.Store { return a.store }
+
+// Preferences 返回声明式配置管理器（支持热重载）
+func (a *App) Preferences() *config.PreferencesManager { return a.prefs }
 
 // I18n 返回国际化管理器
 func (a *App) I18n() *i18n.Manager { return a.i18n }
@@ -396,6 +420,10 @@ func (a *App) Shutdown() {
 		tab.Stop()
 	}
 
+	// 停止配置文件监听
+	if a.stopWatcher != nil {
+		a.stopWatcher()
+	}
 	// 通知 eventLoop 退出（不关闭 uiChan，避免 panic）
 	close(a.done)
 }

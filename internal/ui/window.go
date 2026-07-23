@@ -18,17 +18,17 @@ import (
 
 // MainWindow 是主窗口构建器，负责组装所有 UI 组件并连接 App 回调。
 type MainWindow struct {
-	app          *app.App
-	win          fyne.Window
-	theme        *Theme
-	tabBar       *TabBar
-	sidebar      *Sidebar
-	welcome      *WelcomePage
-	quickCmd     *QuickCmdBar
-	content      *fyne.Container // 内容区域（welcome 或 tab views）
-	views        map[string]*TerminalView
-	localMon     *monitor.LocalMonitor
-	localMonCtx  context.Context
+	app            *app.App
+	win            fyne.Window
+	theme          *Theme
+	tabBar         *TabBar
+	sidebar        *Sidebar
+	welcome        *WelcomePage
+	quickCmd       *QuickCmdBar
+	content        *fyne.Container // 内容区域（welcome 或 tab views）
+	views          map[string]*TerminalView
+	localMon       *monitor.LocalMonitor
+	localMonCtx    context.Context
 	localMonCancel context.CancelFunc
 }
 
@@ -47,6 +47,7 @@ func NewMainWindow(a *app.App) *MainWindow {
 	mw.win = a.FyneApp().NewWindow("GoShell")
 	a.SetWindow(mw.win)
 	mw.win.Resize(fyne.NewSize(1200, 800))
+	mw.win.CenterOnScreen() // 窗口居中显示，更符合 macOS 启动体验
 
 	// 创建各组件
 	mw.tabBar = NewTabBar()
@@ -142,6 +143,20 @@ func (mw *MainWindow) setupAppCallbacks() {
 		tab.OnMonitor = func(metrics *app.MonitorData) {
 			// 远端监控指标更新到侧边栏
 			mw.sidebar.UpdateRemoteMetrics(metrics)
+		}
+
+		// 重连成功后重建 termBox：tab.tryReconnect 已替换 termWidget，
+		// 需让 termBox 丢弃旧 widget 引用并装载新 widget（致命问题 #2）。
+		// 回调在 goroutine 中触发，UI 操作必须经 fyne.Do 切回主线程。
+		tab.OnReconnected = func(tab *app.Tab) {
+			fyne.Do(func() {
+				view, ok := mw.views[tab.ID]
+				if !ok {
+					return
+				}
+				view.RebuildTermBox()
+				view.ShowConnecting()
+			})
 		}
 
 		// 添加到标签栏
@@ -381,11 +396,11 @@ func (mw *MainWindow) buildWindowContent() {
 
 	// 顶部标签栏 + 主区域 + 底部命令栏
 	layout := container.NewBorder(
-		mw.tabBar,    // 顶部
-		mw.quickCmd,  // 底部
-		nil,          // 左侧
-		nil,          // 右侧
-		mainArea,     // 中间
+		mw.tabBar,   // 顶部
+		mw.quickCmd, // 底部
+		nil,         // 左侧
+		nil,         // 右侧
+		mainArea,    // 中间
 	)
 
 	mw.win.SetContent(layout)
@@ -489,8 +504,53 @@ func (mw *MainWindow) setupShortcuts() {
 		Modifier: fyne.KeyModifierControl | fyne.KeyModifierShift,
 		KeyName:  fyne.KeyS,
 	}, func(_ fyne.Shortcut) {
-		ShowSettingsDialog(mw.win, mw.app.Store())
+		ShowSettingsDialog(mw.win, mw.app.Store(), mw.app.Preferences())
 	})
+
+	// Ctrl+Shift+D: 水平拆分当前终端 pane（左右）
+	mw.win.Canvas().AddShortcut(&desktop.CustomShortcut{
+		Modifier: fyne.KeyModifierControl | fyne.KeyModifierShift,
+		KeyName:  fyne.KeyD,
+	}, func(_ fyne.Shortcut) {
+		if view := mw.activeTerminalView(); view != nil {
+			view.SplitHorizontal()
+		}
+	})
+
+	// Alt+Shift+D: 垂直拆分当前终端 pane（上下）
+	mw.win.Canvas().AddShortcut(&desktop.CustomShortcut{
+		Modifier: fyne.KeyModifierAlt | fyne.KeyModifierShift,
+		KeyName:  fyne.KeyD,
+	}, func(_ fyne.Shortcut) {
+		if view := mw.activeTerminalView(); view != nil {
+			view.SplitVertical()
+		}
+	})
+
+	// Ctrl+Shift+W: 关闭当前 pane（若已拆分则关闭镜像 pane，否则关闭标签页）
+	mw.win.Canvas().AddShortcut(&desktop.CustomShortcut{
+		Modifier: fyne.KeyModifierControl | fyne.KeyModifierShift,
+		KeyName:  fyne.KeyW,
+	}, func(_ fyne.Shortcut) {
+		view := mw.activeTerminalView()
+		if view != nil && view.HasSplit() {
+			view.ClosePane()
+			return
+		}
+		tab := mw.app.ActiveTab()
+		if tab != nil {
+			mw.app.CloseTab(tab.ID)
+		}
+	})
+}
+
+// activeTerminalView 返回当前激活标签页对应的 TerminalView，没有时返回 nil。
+func (mw *MainWindow) activeTerminalView() *TerminalView {
+	tab := mw.app.ActiveTab()
+	if tab == nil {
+		return nil
+	}
+	return mw.views[tab.ID]
 }
 
 // showTab 显示指定标签页的内容

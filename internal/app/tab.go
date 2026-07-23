@@ -24,6 +24,7 @@ import (
 	"github.com/zhuyao/meatshell/internal/sftp"
 	"github.com/zhuyao/meatshell/internal/ssh"
 	"github.com/zhuyao/meatshell/internal/telnet"
+	"github.com/zhuyao/meatshell/internal/worker"
 	"github.com/zhuyao/meatshell/internal/terminal"
 	"github.com/zhuyao/meatshell/internal/terminallog"
 )
@@ -34,7 +35,7 @@ type Tab struct {
 	ID         string
 	session    *config.Session
 	container  fyne.CanvasObject
-	worker     interface{} // *ssh.Worker / *serial.Worker / *telnet.Worker
+	worker     worker.Worker // *ssh.Worker / *serial.Worker / *telnet.Worker 等
 	emulator   *terminal.Emulator
 	termWidget *terminal.TerminalWidget
 	ctx        context.Context
@@ -64,10 +65,15 @@ type Tab struct {
 	statusBar *widget.Label
 
 	// UI 回调（由 UI 层设置，可为 nil）
-	OnStatus  func(status ConnectionStatus, msg string)
-	OnSFTP    func(entries []SFTPEntry, progress *TransferProgress)
-	OnTunnel  func(status *TunnelStatus)
-	OnMonitor func(metrics *MonitorData)
+	OnStatus      func(status ConnectionStatus, msg string)
+	OnSFTP        func(entries []SFTPEntry, progress *TransferProgress)
+	OnTunnel      func(status *TunnelStatus)
+	OnMonitor     func(metrics *MonitorData)
+	OnReconnected func(tab *Tab) // 重连成功创建新 widget 后触发，UI 层据此重建 termBox
+
+	// OnTerminalRefresh 在终端数据写入 emulator 后触发，
+	// 供 UI 层刷新镜像面板（终端 pane 拆分时使用）
+	OnTerminalRefresh func()
 }
 
 // NewTab 创建一个新的标签页。uiChan 用于接收后端事件。
@@ -321,6 +327,10 @@ func (t *Tab) HandleEvent(evt UIEvent) {
 		if len(evt.TerminalData) > 0 {
 			t.emulator.Write(evt.TerminalData)
 			t.termWidget.TriggerRefresh()
+			// 通知 UI 层刷新镜像面板（终端 pane 拆分时使用）
+			if t.OnTerminalRefresh != nil {
+				t.OnTerminalRefresh()
+			}
 			// 终端日志记录
 			if t.logEnabled && t.logger != nil {
 				t.logger.Write(evt.TerminalData)
@@ -409,22 +419,9 @@ func (t *Tab) Stop() {
 		t.cancel()
 	}
 
-	// 关闭 worker（根据类型断言）
-	switch w := t.worker.(type) {
-	case *ssh.Worker:
-		w.Close()
-	case *serial.Worker:
-		w.Close()
-	case *telnet.Worker:
-		w.Close()
-	case *localterminal.Worker:
-		w.Close()
-	case *rlogin.Worker:
-		w.Close()
-	case *ftp.Worker:
-		w.Close()
-	case *mosh.Worker:
-		w.Close()
+	// 关闭 worker（通过 Worker interface 统一调用）
+	if t.worker != nil {
+		t.worker.Close()
 	}
 
 	log.Info("tab stopped", "id", t.ID, "session", t.session.Name)
@@ -432,38 +429,20 @@ func (t *Tab) Stop() {
 
 // SendInput 向会话发送输入数据
 func (t *Tab) SendInput(data []byte) {
-	switch w := t.worker.(type) {
-	case *ssh.Worker:
-		w.SendInput(data)
-	case *serial.Worker:
-		w.SendInput(data)
-	case *telnet.Worker:
-		w.SendInput(data)
-	case *localterminal.Worker:
-		w.SendInput(data)
-	case *rlogin.Worker:
-		w.SendInput(data)
-	case *ftp.Worker:
-		w.SendInput(data)
-	case *mosh.Worker:
-		w.SendInput(data)
+	t.mu.Lock()
+	worker := t.worker
+	t.mu.Unlock()
+	if worker == nil {
+		return
 	}
+	worker.SendInput(data)
 }
 
 // Resize 调整终端窗口大小
 func (t *Tab) Resize(cols, rows int) {
-	switch w := t.worker.(type) {
-	case *ssh.Worker:
-		if err := w.Resize(cols, rows); err != nil {
+	if t.worker != nil {
+		if err := t.worker.Resize(cols, rows); err != nil {
 			log.Warn("resize terminal failed", "err", err)
-		}
-	case *localterminal.Worker:
-		if err := w.Resize(cols, rows); err != nil {
-			log.Warn("resize local terminal failed", "err", err)
-		}
-	case *mosh.Worker:
-		if err := w.Resize(cols, rows); err != nil {
-			log.Warn("resize mosh terminal failed", "err", err)
 		}
 	}
 	t.termWidget.SetSize(cols, rows)
@@ -612,11 +591,27 @@ func (t *Tab) tryReconnect() {
 	switch t.session.Type {
 	case config.SessionSSH:
 		worker := ssh.NewWorker(t.session, t.uiChan)
+		t.mu.Lock()
 		t.worker = worker
+		t.mu.Unlock()
 		t.termWidget = terminal.NewTerminalWidget(t.emulator, worker.SendInput)
+
+		// 通知 UI 层：旧 termWidget 已被替换，需重建 termBox 引用新 widget，
+		// 否则用户看到的仍是旧画面且输入无响应（致命问题 #2）。
+		// 回调在 goroutine 中触发，UI 层需用 fyne.Do 包裹实际操作。
+		if t.OnReconnected != nil {
+			cb := t.OnReconnected
+			go cb(t)
+		}
+
 		go func() {
 			if err := worker.Connect(t.ctx); err != nil {
 				log.Warn("reconnect failed", "host", t.session.Host, "err", err)
+				// Connect 失败时重置 reconnecting 标志，确保后续断线仍可触发重连
+				// 成功路径由 handleStatusEvent 在 StatusConnected 时重置
+				t.mu.Lock()
+				t.reconnecting = false
+				t.mu.Unlock()
 			}
 		}()
 	default:

@@ -16,13 +16,13 @@ import (
 // sidebarMinWidth 是侧边栏的最小宽度（像素），防止被拖拽得太窄
 const sidebarMinWidth = 200
 
-// 侧边栏颜色
+// 侧边栏颜色（macOS 暗色模式调色板）
 var (
-	colorSidebarBg     = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xff}
-	colorCardBg        = color.RGBA{R: 0x31, G: 0x31, B: 0x44, A: 0x60}
-	colorGroupTitle    = color.RGBA{R: 0xa6, G: 0xac, B: 0xba, A: 0xff}
-	colorStatusOK      = color.RGBA{R: 0xa6, G: 0xda, B: 0x95, A: 0xff}
-	colorStatusError   = color.RGBA{R: 0xed, G: 0x87, B: 0x96, A: 0xff}
+	colorSidebarBg   = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xff}
+	colorCardBg      = color.RGBA{R: 0x2a, G: 0x2a, B: 0x3a, A: 0x80}
+	colorGroupTitle  = color.RGBA{R: 0x8e, G: 0x8e, B: 0x93, A: 0xff}
+	colorStatusOK    = color.RGBA{R: 0x30, G: 0xd1, B: 0x58, A: 0xff} // macOS 绿
+	colorStatusError = color.RGBA{R: 0xff, G: 0x45, B: 0x3a, A: 0xff} // macOS 红
 )
 
 // Sidebar 是系统监控侧边栏，显示本机 CPU、内存、网络和磁盘的实时指标。
@@ -43,10 +43,10 @@ type Sidebar struct {
 // NewSidebar 创建侧边栏
 func NewSidebar() *Sidebar {
 	s := &Sidebar{
-		cpuSpark:    NewSparkline(color.RGBA{R: 0xed, G: 0x87, B: 0x96, A: 0xff}, 30),
-		memSpark:    NewSparkline(color.RGBA{R: 0xfa, G: 0xb3, B: 0x87, A: 0xff}, 30),
-		netSpark:    NewSparkline(color.RGBA{R: 0xa6, G: 0xda, B: 0x95, A: 0xff}, 30),
-		diskSpark:   NewSparkline(color.RGBA{R: 0x7b, G: 0xd3, B: 0xf5, A: 0xff}, 30),
+		cpuSpark:    NewSparkline(color.RGBA{R: 0xff, G: 0x9f, B: 0x0a, A: 0xff}, 30), // macOS 橙
+		memSpark:    NewSparkline(color.RGBA{R: 0xbf, G: 0x5a, B: 0xf2, A: 0xff}, 30), // macOS 紫
+		netSpark:    NewSparkline(color.RGBA{R: 0x30, G: 0xd1, B: 0x58, A: 0xff}, 30), // macOS 绿
+		diskSpark:   NewSparkline(color.RGBA{R: 0x0a, G: 0x84, B: 0xff, A: 0xff}, 30), // macOS 蓝
 		cpuLabel:    widget.NewLabel("CPU: --"),
 		memLabel:    widget.NewLabel("MEM: --"),
 		netLabel:    widget.NewLabel("NET: --"),
@@ -141,8 +141,9 @@ func newMetricCard(title string, spark *Sparkline, valueLabel *widget.Label) fyn
 		valueLabel,
 	)
 
-	// 卡片背景
+	// 卡片背景（macOS 风格圆角）
 	bg := canvas.NewRectangle(colorCardBg)
+	bg.CornerRadius = 8
 	return container.NewStack(bg, container.NewPadded(scroll))
 }
 
